@@ -95,6 +95,12 @@ Shader "VSM/ShadowOnly"
                 float shadowDepth = asfloat(depthUint);
                 float currentDepth = ndc.z;  // Use NDC depth for comparison
 
+                // DEBUG: 可视化深度值
+                // 取消注释下面的行来调试深度值范围
+                return float4(shadowDepth, shadowDepth, shadowDepth, 1.0); // 查看存储的深度
+                //return float4(currentDepth, currentDepth, currentDepth, 1.0); // 查看当前深度
+                //return float4(abs(currentDepth - shadowDepth) * 100, 0, 0, 1); // 查看深度差异
+
                 // 比较深度
                 float shadow = (currentDepth - _ShadowBias) > shadowDepth ? 0.0 : 1.0;
 
