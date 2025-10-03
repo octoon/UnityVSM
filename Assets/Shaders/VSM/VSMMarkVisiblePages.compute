@@ -1,0 +1,121 @@
+#pragma kernel MarkVisiblePages
+
+#include "../Include/VSMCommon.hlsl"
+
+// Input depth buffer from camera
+Texture2D<float> _CameraDepthTexture;
+SamplerState sampler_CameraDepthTexture;
+
+// Virtual Page Table
+RWTexture2DArray<uint> _VirtualPageTable;
+
+// Allocation requests buffer
+struct AllocationRequest
+{
+    int3 pageCoords;
+    uint padding;
+};
+AppendStructuredBuffer<AllocationRequest> _AllocationRequests;
+
+// Camera and cascade data
+float4x4 _CameraInverseViewProjection;
+float4x4 _CameraViewProjection;
+float3 _CameraPosition;
+float _FirstCascadeSize;
+
+StructuredBuffer<float4x4> _CascadeLightMatrices;
+StructuredBuffer<int2> _CascadeOffsets;
+
+uint _ScreenWidth;
+uint _ScreenHeight;
+int _FilterMargin;  // Margin in pages for PCF filtering support
+int _UsePixelPerfectHeuristic;  // 0 = distance-based, 1 = pixel-perfect
+float _CascadeBias;  // Bias for cascade selection
+
+float3 ReconstructWorldPosition(float2 uv, float depth)
+{
+    float4 clipPos = float4(uv * 2.0 - 1.0, depth, 1.0);
+    clipPos.y = -clipPos.y;  // Flip Y for Unity
+    float4 worldPos = mul(_CameraInverseViewProjection, clipPos);
+    return worldPos.xyz / worldPos.w;
+}
+
+[numthreads(8, 8, 1)]
+void MarkVisiblePages(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _ScreenWidth || id.y >= _ScreenHeight)
+        return;
+
+    float2 uv = (id.xy + 0.5) / float2(_ScreenWidth, _ScreenHeight);
+    float depth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, uv, 0);
+
+    // Skip skybox/far plane
+    if (depth >= 1.0)
+        return;
+
+    // Reconstruct world position
+    float3 worldPos = ReconstructWorldPosition(uv, depth);
+
+    // Calculate cascade level using selected heuristic
+    int cascadeLevel;
+    if (_UsePixelPerfectHeuristic > 0)
+    {
+        // First heuristic: Pixel-perfect (one-to-one mapping)
+        float screenTexelWorldSize = GetScreenTexelWorldSize(worldPos, _CameraViewProjection, float2(_ScreenWidth, _ScreenHeight));
+        float cascade0TexelWorldSize = _FirstCascadeSize / VSM_VIRTUAL_TEXTURE_RESOLUTION;
+        cascadeLevel = CalculateCascadeLevelPixelPerfect(screenTexelWorldSize, cascade0TexelWorldSize, _CascadeBias);
+    }
+    else
+    {
+        // Second heuristic: Distance-based (rotationally invariant)
+        cascadeLevel = CalculateCascadeLevel(worldPos, _CameraPosition, _FirstCascadeSize);
+    }
+
+    // Transform to light space
+    float4x4 lightMatrix = _CascadeLightMatrices[cascadeLevel];
+    float2 lightSpaceUV = WorldToLightSpaceUV(worldPos, lightMatrix);
+
+    // Check if in valid range
+    if (any(lightSpaceUV < 0.0) || any(lightSpaceUV > 1.0))
+        return;
+
+    // Calculate virtual page coordinates
+    int2 basePage = int2(floor(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION));
+    int2 cascadeOffset = _CascadeOffsets[cascadeLevel];
+
+    // Mark the page and surrounding pages for filtering support
+    // Paper section 12.2.3: "we mark all pages lying in a region around it"
+    for (int dy = -_FilterMargin; dy <= _FilterMargin; dy++)
+    {
+        for (int dx = -_FilterMargin; dx <= _FilterMargin; dx++)
+        {
+            int3 pageCoords = int3(basePage + int2(dx, dy), cascadeLevel);
+
+            // Convert to wrapped coordinates
+            int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+
+            if (wrappedCoords.x < 0)
+                continue;
+
+            // Read page entry
+            uint pageEntry = _VirtualPageTable[wrappedCoords];
+
+            if (!GetIsAllocated(pageEntry))
+            {
+                // Page not allocated - request allocation
+                AllocationRequest request;
+                request.pageCoords = pageCoords;
+                request.padding = 0;
+                _AllocationRequests.Append(request);
+            }
+            else if (!GetIsVisible(pageEntry))
+            {
+                // Page allocated but not visible - mark as visible AND dirty this frame
+                // Paper: "cached pages" need to be marked visible, but they should already have content
+                // Only mark visible, NOT dirty (cached pages don't need re-rendering)
+                InterlockedOr(_VirtualPageTable[wrappedCoords], VSM_VISIBLE_BIT);
+            }
+            // If allocated and visible, do nothing (third case from paper)
+        }
+    }
+}

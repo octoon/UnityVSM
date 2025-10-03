@@ -1,0 +1,55 @@
+#pragma kernel CullMeshlets
+
+#include "../Include/VSMCommon.hlsl"
+
+// Meshlet data (simplified)
+struct Meshlet
+{
+    float3 boundsMin;
+    float3 boundsMax;
+    uint meshletIndex;
+    uint padding;
+};
+
+StructuredBuffer<Meshlet> _Meshlets;
+AppendStructuredBuffer<uint> _VisibleMeshlets;
+
+// HPB for culling
+Texture2DArray<float> _HPB;
+
+// Cascade data
+StructuredBuffer<float4x4> _CascadeLightMatrices;
+uint _CurrentCascade;
+uint _MeshletCount;
+int _HPBMaxLevel;
+
+// Paper section 12.2.2: "Hierarchical Page Culling"
+// "The task (or amplification) shader performs frustum culling followed by culling against the HPB"
+[numthreads(64, 1, 1)]
+void CullMeshlets(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _MeshletCount)
+        return;
+
+    Meshlet meshlet = _Meshlets[id.x];
+    float4x4 lightMatrix = _CascadeLightMatrices[_CurrentCascade];
+
+    // Step 1: Frustum culling (simplified - check if bounds are in [0,1] range)
+    float2 uvMin, uvMax;
+    ProjectBoundsToLightSpace(meshlet.boundsMin, meshlet.boundsMax, lightMatrix, uvMin, uvMax);
+
+    // Basic frustum cull
+    if (uvMax.x < 0.0 || uvMin.x > 1.0 || uvMax.y < 0.0 || uvMin.y > 1.0)
+        return;  // Outside frustum
+
+    // Step 2: HPB culling
+    // Paper: "if any of the four intersected texels is marked as dirty, the meshlet survives culling"
+    bool passesHPBCull = HPBCullTest(uvMin, uvMax, _CurrentCascade, _HPB, _HPBMaxLevel);
+
+    if (passesHPBCull)
+    {
+        // Meshlet survives culling - add to visible list
+        _VisibleMeshlets.Append(meshlet.meshletIndex);
+    }
+    // Otherwise, meshlet is culled (discarded)
+}

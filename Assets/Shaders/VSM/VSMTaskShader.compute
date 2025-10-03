@@ -1,0 +1,80 @@
+#pragma kernel TaskShaderCulling
+
+#include "../Include/VSMCommon.hlsl"
+
+// 论文: "The task (or amplification) shader performs frustum culling followed by culling against the HPB"
+
+// Meshlet数据结构（匹配C#定义）
+struct Meshlet
+{
+    float3 boundsMin;
+    float3 boundsMax;
+    uint vertexOffset;
+    uint vertexCount;
+    uint indexOffset;
+    uint triangleCount;
+    uint meshletIndex;
+    uint padding1;
+    uint padding2;
+    uint padding3;
+};
+
+// 输入：所有meshlet
+StructuredBuffer<Meshlet> _Meshlets;
+
+// 输出：通过剔除的meshlet索引
+AppendStructuredBuffer<uint> _VisibleMeshlets;
+
+// HPB用于剔除
+Texture2DArray<float> _HPB;
+
+// 级联数据
+StructuredBuffer<float4x4> _CascadeLightMatrices;
+StructuredBuffer<int2> _CascadeOffsets;
+
+// 参数
+uint _TotalMeshletCount;
+uint _CurrentCascade;
+int _HPBMaxLevel;
+float4x4 _ModelMatrix;  // 物体的世界矩阵
+
+// 论文: "One meshlet is mapped to a single task shader invocation"
+[numthreads(64, 1, 1)]
+void TaskShaderCulling(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _TotalMeshletCount)
+        return;
+
+    Meshlet meshlet = _Meshlets[id.x];
+
+    // 变换包围盒到世界空间
+    float3 worldBoundsMin = mul(_ModelMatrix, float4(meshlet.boundsMin, 1.0)).xyz;
+    float3 worldBoundsMax = mul(_ModelMatrix, float4(meshlet.boundsMax, 1.0)).xyz;
+
+    // 获取级联光源矩阵
+    float4x4 lightMatrix = _CascadeLightMatrices[_CurrentCascade];
+
+    // 步骤1: 视锥剔除
+    // 论文: "The task shader performs frustum culling followed by culling against the HPB"
+    float2 uvMin, uvMax;
+    ProjectBoundsToLightSpace(worldBoundsMin, worldBoundsMax, lightMatrix, uvMin, uvMax);
+
+    // 检查是否在级联视锥内（UV范围[0,1]）
+    if (uvMax.x < 0.0 || uvMin.x > 1.0 || uvMax.y < 0.0 || uvMin.y > 1.0)
+    {
+        return; // 视锥剔除：不在视野内
+    }
+
+    // 步骤2: HPB剔除
+    // 论文: "if any of the four intersected texels is marked as dirty, the meshlet survives culling"
+    bool passesHPBCull = HPBCullTest(uvMin, uvMax, _CurrentCascade, _HPB, _HPBMaxLevel);
+
+    if (!passesHPBCull)
+    {
+        return; // HPB剔除：不影响任何脏页面
+    }
+
+    // 剔除通过，添加到可见列表
+    // 论文: "After culling, a group of 32 mesh shader threads is dispatched for each of the surviving meshlets"
+    _VisibleMeshlets.Append(meshlet.meshletIndex);
+}

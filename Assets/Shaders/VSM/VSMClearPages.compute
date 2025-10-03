@@ -1,0 +1,55 @@
+#pragma kernel ClearDirtyPages
+
+#include "../Include/VSMCommon.hlsl"
+
+// Physical memory texture
+RWTexture2D<float> _PhysicalMemory;
+
+// Allocation requests (these pages are dirty and need clearing)
+struct AllocationRequest
+{
+    int3 pageCoords;
+    uint padding;
+};
+StructuredBuffer<AllocationRequest> _AllocationRequests;
+
+// Virtual Page Table to look up physical coordinates
+Texture2DArray<uint> _VirtualPageTable;
+StructuredBuffer<int2> _CascadeOffsets;
+
+uint _AllocationRequestCount;
+
+[numthreads(8, 8, 1)]
+void ClearDirtyPages(uint3 id : SV_DispatchThreadID)
+{
+    uint requestIndex = id.z;
+    if (requestIndex >= _AllocationRequestCount)
+        return;
+
+    AllocationRequest request = _AllocationRequests[requestIndex];
+    int3 pageCoords = request.pageCoords;
+
+    // Get wrapped coordinates
+    int2 cascadeOffset = _CascadeOffsets[pageCoords.z];
+    int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+
+    if (wrappedCoords.x < 0)
+        return;
+
+    // Look up physical page coordinates from VPT
+    uint pageEntry = _VirtualPageTable[wrappedCoords];
+    if (!GetIsAllocated(pageEntry))
+        return;
+
+    int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
+
+    // Calculate texel coordinates within the page
+    if (id.x >= VSM_PAGE_SIZE || id.y >= VSM_PAGE_SIZE)
+        return;
+
+    int2 texelCoordsInPage = id.xy;
+    int2 physicalTexelCoords = physicalPageCoords * VSM_PAGE_SIZE + texelCoordsInPage;
+
+    // Clear to far plane (1.0)
+    _PhysicalMemory[physicalTexelCoords] = 1.0;
+}

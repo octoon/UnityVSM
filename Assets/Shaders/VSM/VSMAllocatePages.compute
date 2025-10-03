@@ -1,0 +1,172 @@
+#pragma kernel FillAllocatorBuffers
+#pragma kernel AllocatePages
+
+#include "../Include/VSMCommon.hlsl"
+
+// Virtual Page Table and Physical Page Table
+RWTexture2DArray<uint> _VirtualPageTable;
+RWStructuredBuffer<uint4> _PhysicalPageTable;
+
+// Free and used physical page buffers
+struct PhysicalPageCoords
+{
+    int2 coords;
+};
+AppendStructuredBuffer<PhysicalPageCoords> _FreePhysicalPages;
+AppendStructuredBuffer<PhysicalPageCoords> _UsedPhysicalPages;
+
+// Allocation requests
+struct AllocationRequest
+{
+    int3 pageCoords;
+    uint padding;
+};
+StructuredBuffer<AllocationRequest> _AllocationRequests;
+
+StructuredBuffer<int2> _CascadeOffsets;
+
+uint _MaxPhysicalPages;
+uint _AllocationRequestCount;
+uint _FreePageCount;
+uint _UsedPageCount;
+
+// Fill allocator buffers kernel - Paper section 12.2.1: "Filling Allocator Buffers"
+[numthreads(64, 1, 1)]
+void FillAllocatorBuffers(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _MaxPhysicalPages)
+        return;
+
+    uint physicalPageIndex = id.x;
+
+    // Calculate 2D coordinates for this physical page
+    int2 physicalCoords = int2(
+        physicalPageIndex % 64,  // PHYSICAL_PAGE_COLS
+        physicalPageIndex / 64   // PHYSICAL_PAGE_ROWS
+    );
+
+    // Read physical page table entry
+    uint4 pptEntry = _PhysicalPageTable[physicalPageIndex];
+    int3 virtualPageCoords = int3(pptEntry.xyz);
+    bool isAllocated = pptEntry.w != 0;
+
+    if (!isAllocated)
+    {
+        // Add to free pages buffer (first buffer - highest priority)
+        PhysicalPageCoords page;
+        page.coords = physicalCoords;
+        _FreePhysicalPages.Append(page);
+    }
+    else
+    {
+        // Check if the virtual page is visible
+        int cascadeIndex = virtualPageCoords.z;
+        int2 cascadeOffset = _CascadeOffsets[cascadeIndex];
+        int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(virtualPageCoords, cascadeOffset);
+
+        if (wrappedCoords.x >= 0)
+        {
+            uint pageEntry = _VirtualPageTable[wrappedCoords];
+
+            if (!GetIsVisible(pageEntry))
+            {
+                // Page is allocated but not visible - can be reused (second buffer - lower priority)
+                PhysicalPageCoords page;
+                page.coords = physicalCoords;
+                _UsedPhysicalPages.Append(page);
+            }
+        }
+    }
+}
+
+// Allocate pages kernel - Paper section 12.2.1: "Allocating Pages"
+// "The allocator attempts to use physical pages from the first buffer, holding unallocated pages.
+//  Only when there are insufficient free pages are the pages in the second buffer used."
+RWStructuredBuffer<PhysicalPageCoords> _FreePhysicalPagesConsume;
+RWStructuredBuffer<PhysicalPageCoords> _UsedPhysicalPagesConsume;
+RWStructuredBuffer<uint> _AllocationCounter;  // Shared counter for allocation
+
+[numthreads(64, 1, 1)]
+void AllocatePages(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _AllocationRequestCount)
+        return;
+
+    AllocationRequest request = _AllocationRequests[id.x];
+    int3 pageCoords = request.pageCoords;
+    int cascadeIndex = pageCoords.z;
+
+    // Get wrapped coordinates
+    int2 cascadeOffset = _CascadeOffsets[cascadeIndex];
+    int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+
+    if (wrappedCoords.x < 0)
+        return;
+
+    // Two-stage allocation strategy from paper
+    int2 physicalCoords = int2(-1, -1);
+    uint physicalPageIndex = 0;
+    bool needToFreeOldPage = false;
+    int3 oldVirtualPageCoords = int3(0, 0, 0);
+
+    // Stage 1: Try to get from free pages buffer first
+    uint freeIndex;
+    InterlockedAdd(_AllocationCounter[0], 1, freeIndex);
+
+    if (freeIndex < _FreePageCount)
+    {
+        // Got a free page from first buffer
+        physicalCoords = _FreePhysicalPagesConsume[freeIndex].coords;
+    }
+    else
+    {
+        // Stage 2: No free pages, use pages from second buffer (used but not visible)
+        uint usedIndex;
+        InterlockedAdd(_AllocationCounter[1], 1, usedIndex);
+
+        if (usedIndex < _UsedPageCount)
+        {
+            physicalCoords = _UsedPhysicalPagesConsume[usedIndex].coords;
+
+            // Calculate physical page index
+            physicalPageIndex = physicalCoords.y * 64 + physicalCoords.x;
+
+            // Read old virtual page coordinates from PPT
+            uint4 pptEntry = _PhysicalPageTable[physicalPageIndex];
+            oldVirtualPageCoords = int3(pptEntry.xyz);
+            needToFreeOldPage = true;
+        }
+        else
+        {
+            // No pages available - this shouldn't happen if physical memory is sized correctly
+            return;
+        }
+    }
+
+    if (physicalCoords.x < 0)
+        return;
+
+    // Calculate physical page linear index
+    physicalPageIndex = physicalCoords.y * 64 + physicalCoords.x;
+
+    // If reusing a page, free the old virtual page first (paper: "the page must first be freed before it is reused")
+    if (needToFreeOldPage)
+    {
+        int2 oldCascadeOffset = _CascadeOffsets[oldVirtualPageCoords.z];
+        int3 oldWrappedCoords = VirtualPageCoordsToWrappedCoords(oldVirtualPageCoords, oldCascadeOffset);
+
+        if (oldWrappedCoords.x >= 0)
+        {
+            // Reset old virtual page entry to unallocated
+            _VirtualPageTable[oldWrappedCoords] = 0;
+        }
+    }
+
+    // Update Virtual Page Table with new allocation
+    // Paper: "both the physical page and new virtual page are marked as allocated, and each stores the others' coordinates"
+    uint newEntry = PackPageEntry(true, true, true, physicalCoords);
+    _VirtualPageTable[wrappedCoords] = newEntry;
+
+    // Update Physical Page Table (inverse mapping)
+    _PhysicalPageTable[physicalPageIndex] = uint4(pageCoords.xyz, 1);
+}

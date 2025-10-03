@@ -1,0 +1,44 @@
+#pragma kernel BuildHPB
+
+#include "../Include/VSMCommon.hlsl"
+
+// Source textures
+Texture2DArray<uint> _VirtualPageTable;
+Texture2DArray<float> _SourceHPB;
+
+// Output HPB
+RWTexture2DArray<float> _OutputHPB;
+
+int _MipLevel;
+int _Resolution;
+
+[numthreads(8, 8, 1)]
+void BuildHPB(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _Resolution || id.y >= _Resolution || id.z >= VSM_CASCADE_COUNT)
+        return;
+
+    float dirtyValue = 0.0;
+
+    if (_MipLevel == 0)
+    {
+        // Base level - extract dirty flag from VPT
+        uint pageEntry = _VirtualPageTable[id];
+        dirtyValue = GetIsDirty(pageEntry) ? 1.0 : 0.0;
+    }
+    else
+    {
+        // Higher levels - do max reduction of 2x2 region
+        int2 sourceCoord = id.xy * 2;
+
+        float v00 = _SourceHPB[int3(sourceCoord + int2(0, 0), id.z)];
+        float v01 = _SourceHPB[int3(sourceCoord + int2(1, 0), id.z)];
+        float v10 = _SourceHPB[int3(sourceCoord + int2(0, 1), id.z)];
+        float v11 = _SourceHPB[int3(sourceCoord + int2(1, 1), id.z)];
+
+        // Max reduction - if any child is dirty, parent is dirty
+        dirtyValue = max(max(v00, v01), max(v10, v11));
+    }
+
+    _OutputHPB[id] = dirtyValue;
+}

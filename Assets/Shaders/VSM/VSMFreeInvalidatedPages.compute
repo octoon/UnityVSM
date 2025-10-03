@@ -1,0 +1,68 @@
+#pragma kernel FreeInvalidatedPages
+
+#include "../Include/VSMCommon.hlsl"
+
+// Virtual Page Table (3D texture array)
+RWTexture2DArray<uint> _VirtualPageTable;
+
+// Per-cascade data
+StructuredBuffer<int2> _CascadeOffsets;
+StructuredBuffer<int2> _CascadeShifts;  // How many pages the cascade moved
+StructuredBuffer<uint> _DynamicInvalidationMasks;  // Bitmask for dynamic objects
+
+int _CurrentCascade;
+
+// Extract bit from bitmask for a page
+bool ExtractPageBitFromMask(int3 pageCoords, uint mask)
+{
+    int linearIndex = pageCoords.y * VSM_PAGE_TABLE_RESOLUTION + pageCoords.x;
+    int maskIndex = linearIndex / 32;
+    int bitIndex = linearIndex % 32;
+
+    // Simple version - would need proper indexing for full implementation
+    return (mask & (1u << bitIndex)) != 0;
+}
+
+[numthreads(8, 8, 1)]
+void FreeInvalidatedPages(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= VSM_PAGE_TABLE_RESOLUTION || id.y >= VSM_PAGE_TABLE_RESOLUTION)
+        return;
+
+    int3 pageCoords = int3(id.xy, _CurrentCascade);
+    int2 cascadeOffset = _CascadeOffsets[_CurrentCascade];
+    int2 cascadeShift = _CascadeShifts[_CurrentCascade];
+
+    // Check if page should be cleared due to cascade movement (wrap around)
+    bool shouldClearWrap = false;
+    if (cascadeShift.x > 0 && pageCoords.x < cascadeShift.x)
+        shouldClearWrap = true;
+    if (cascadeShift.x < 0 && pageCoords.x > VSM_PAGE_TABLE_RESOLUTION + (cascadeShift.x - 1))
+        shouldClearWrap = true;
+    if (cascadeShift.y > 0 && pageCoords.y < cascadeShift.y)
+        shouldClearWrap = true;
+    if (cascadeShift.y < 0 && pageCoords.y > VSM_PAGE_TABLE_RESOLUTION + (cascadeShift.y - 1))
+        shouldClearWrap = true;
+
+    // Check if page should be cleared due to dynamic objects
+    bool shouldClearDynamic = false;
+    if (_DynamicInvalidationMasks.Length > _CurrentCascade)
+    {
+        shouldClearDynamic = ExtractPageBitFromMask(pageCoords, _DynamicInvalidationMasks[_CurrentCascade]);
+    }
+
+    // Free the page if needed
+    if (shouldClearWrap || shouldClearDynamic)
+    {
+        int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+        if (wrappedCoords.x >= 0)  // Valid coordinates
+        {
+            uint pageEntry = _VirtualPageTable[wrappedCoords];
+            if (GetIsAllocated(pageEntry))
+            {
+                // Reset page to unallocated state
+                _VirtualPageTable[wrappedCoords] = 0;
+            }
+        }
+    }
+}

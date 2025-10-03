@@ -1,0 +1,25 @@
+#pragma kernel ClearVisibleFlags
+
+#include "../Include/VSMCommon.hlsl"
+
+// Virtual Page Table
+RWTexture2DArray<uint> _VirtualPageTable;
+
+// Paper requirement: "At the start of each frame, we must clear the visible flag from all pages"
+// This ensures only pages visible THIS frame are marked
+[numthreads(8, 8, 1)]
+void ClearVisibleFlags(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= VSM_PAGE_TABLE_RESOLUTION ||
+        id.y >= VSM_PAGE_TABLE_RESOLUTION ||
+        id.z >= VSM_CASCADE_COUNT)
+        return;
+
+    uint pageEntry = _VirtualPageTable[id];
+
+    // Clear ONLY the visible bit, preserve allocated and dirty bits
+    // This is critical for proper page lifecycle management
+    pageEntry = pageEntry & ~VSM_VISIBLE_BIT;
+
+    _VirtualPageTable[id] = pageEntry;
+}
