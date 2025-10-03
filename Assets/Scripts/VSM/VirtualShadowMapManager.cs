@@ -457,9 +457,14 @@ namespace VSM
             // Get all shadow casters in the scene
             Renderer[] renderers = FindObjectsOfType<Renderer>();
 
+            // DEBUG: Log total renderer count
+            Debug.Log($"[VSM DrawingPhase] Total renderers found: {renderers.Length}");
+
             // Render each cascade
             for (int cascadeIndex = 0; cascadeIndex < VSMConstants.CASCADE_COUNT; cascadeIndex++)
             {
+                int drawnThisCascade = 0; // DEBUG counter
+
                 // Clear depth buffer for this cascade
                 vsmCommandBuffer.ClearRenderTarget(true, false, Color.clear);
 
@@ -476,12 +481,20 @@ namespace VSM
                 {
                     // Check if renderer is in shadow caster layer
                     if (((1 << renderer.gameObject.layer) & shadowCasters) == 0)
+                    {
+                        // DEBUG: Log filtered objects
+                        Debug.Log($"[VSM] Skipping {renderer.name} - not in shadowCasters layer");
                         continue;
+                    }
 
                     // Frustum culling against cascade
                     Bounds bounds = renderer.bounds;
                     if (!IsInCascadeFrustum(bounds, cascadeIndex))
+                    {
+                        // DEBUG: Log culled objects
+                        //Debug.Log($"[VSM] Culled {renderer.name} - outside cascade {cascadeIndex} frustum");
                         continue;
+                    }
 
                     // HPB culling would go here - for now we render all objects in frustum
                     // See VSMCullAndDraw.compute for HPB culling implementation
@@ -489,7 +502,10 @@ namespace VSM
                     // Get mesh
                     MeshFilter meshFilter = renderer.GetComponent<MeshFilter>();
                     if (meshFilter == null || meshFilter.sharedMesh == null)
+                    {
+                        Debug.Log($"[VSM] Skipping {renderer.name} - no MeshFilter or shared mesh");
                         continue;
+                    }
 
                     // Draw mesh to VSM using command buffer
                     Matrix4x4 worldMatrix = renderer.transform.localToWorldMatrix;
@@ -500,7 +516,12 @@ namespace VSM
                         0, // submesh index
                         0  // shader pass
                     );
+
+                    drawnThisCascade++; // DEBUG counter
                 }
+
+                // DEBUG: Log draw count per cascade
+                Debug.Log($"[VSM DrawingPhase] Cascade {cascadeIndex}: Drew {drawnThisCascade} objects");
             }
 
             // Release temporary RT
