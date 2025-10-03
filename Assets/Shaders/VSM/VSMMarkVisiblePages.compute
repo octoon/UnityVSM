@@ -99,23 +99,33 @@ void MarkVisiblePages(uint3 id : SV_DispatchThreadID)
 
             // Read page entry
             uint pageEntry = _VirtualPageTable[wrappedCoords];
+            uint oldEntry = pageEntry;
 
+            // Paper: Three cases based on page state
             if (!GetIsAllocated(pageEntry))
             {
-                // Page not allocated - request allocation
-                AllocationRequest request;
-                request.pageCoords = pageCoords;
-                request.padding = 0;
-                _AllocationRequests.Append(request);
+                // Case 1: Page not allocated - request allocation
+                // Use InterlockedCompareExchange to ensure only ONE thread requests allocation
+                InterlockedCompareExchange(_VirtualPageTable[wrappedCoords],
+                    oldEntry,
+                    oldEntry | VSM_VISIBLE_BIT,
+                    pageEntry);
+
+                // Only the thread that successfully set VISIBLE bit appends the request
+                if (pageEntry == oldEntry)
+                {
+                    AllocationRequest request;
+                    request.pageCoords = pageCoords;
+                    request.padding = 0;
+                    _AllocationRequests.Append(request);
+                }
             }
             else if (!GetIsVisible(pageEntry))
             {
-                // Page allocated but not visible - mark as visible AND dirty this frame
-                // Paper: "cached pages" need to be marked visible, but they should already have content
-                // Only mark visible, NOT dirty (cached pages don't need re-rendering)
+                // Case 2: Page allocated but not visible - mark as visible
                 InterlockedOr(_VirtualPageTable[wrappedCoords], VSM_VISIBLE_BIT);
             }
-            // If allocated and visible, do nothing (third case from paper)
+            // Case 3: Page allocated and visible - do nothing
         }
     }
 }

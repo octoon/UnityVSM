@@ -14,7 +14,7 @@ namespace VSM
         [SerializeField] private Light directionalLight;
         [SerializeField] private float firstCascadeSize = 2.0f;  // Side length of first cascade frustum (not radius)
         [SerializeField] private LayerMask shadowCasters = -1;
-        [SerializeField] [Range(0, 3)] private int filterMargin = 1;  // Pages margin for PCF filtering
+        [SerializeField] [Range(0, 3)] private int filterMargin = 0;  // Pages margin for PCF filtering (TEMP: set to 0 to reduce allocation requests)
 
         [Header("Cascade Selection Heuristic")]
         [SerializeField] private bool usePixelPerfectHeuristic = false;  // Use first (pixel-perfect) or second (distance) heuristic
