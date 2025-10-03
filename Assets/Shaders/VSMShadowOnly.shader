@@ -58,7 +58,12 @@ Shader "VSM/ShadowOnly"
                 // 转换到光空间
                 float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
                 float4 lightSpace = mul(lightMat, float4(i.worldPos, 1.0));
-                float2 uv = lightSpace.xy * 0.5 + 0.5;
+
+                // 透视除法（对于正交投影，w=1.0，但仍需要做）
+                float3 ndc = lightSpace.xyz / lightSpace.w;
+
+                // NDC [-1,1] -> UV [0,1]
+                float2 uv = ndc.xy * 0.5 + 0.5;
 
                 // 边界检查
                 if (any(uv < 0.0) || any(uv > 1.0))
@@ -88,7 +93,7 @@ Shader "VSM/ShadowOnly"
                 // 采样深度
                 uint depthUint = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
                 float shadowDepth = asfloat(depthUint);
-                float currentDepth = lightSpace.z;
+                float currentDepth = ndc.z;  // Use NDC depth for comparison
 
                 // 比较深度
                 float shadow = (currentDepth - _ShadowBias) > shadowDepth ? 0.0 : 1.0;

@@ -82,8 +82,11 @@ Shader "VSM/ForwardLit"
                 float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
                 float4 lightSpace = mul(lightMat, float4(worldPos, 1.0));
 
-                // NDC to UV
-                float2 uv = lightSpace.xy * 0.5 + 0.5;
+                // Perspective division (for orthographic, w=1.0)
+                float3 ndc = lightSpace.xyz / lightSpace.w;
+
+                // NDC [-1,1] to UV [0,1]
+                float2 uv = ndc.xy * 0.5 + 0.5;
 
                 // Out of bounds check
                 if (any(uv < 0.0) || any(uv > 1.0))
@@ -119,8 +122,8 @@ Shader "VSM/ForwardLit"
                 // Load shadow depth
                 float shadowDepth = LoadDepth(physicalPixel);
 
-                // Compare with current depth
-                float currentDepth = lightSpace.z;
+                // Compare with current depth (use NDC depth)
+                float currentDepth = ndc.z;
 
                 // Return shadow factor (0 = shadow, 1 = lit)
                 return (currentDepth - _ShadowBias) > shadowDepth ? 0.0 : 1.0;
