@@ -13,9 +13,10 @@ Shader "VSM/SimpleShadowReceiver"
 
         Pass
         {
-            CGPROGRAM
+            HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            #pragma target 5.0
             #include "UnityCG.cginc"
 
             struct appdata
@@ -153,7 +154,7 @@ Shader "VSM/SimpleShadowReceiver"
                 col.rgb *= lighting + ambient;
                 return col;
             }
-            ENDCG
+            ENDHLSL
         }
     }
 

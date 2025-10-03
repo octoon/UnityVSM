@@ -13,13 +13,10 @@ Shader "VSM/StandardSurface"
         LOD 200
 
         CGPROGRAM
-        // Surface shader with VSM shadows
+        // Surface shader - simplified, no VSM shadows for now
+        // Use VSM/ForwardLit or VSM/ForwardLitDebug instead for full VSM support
         #pragma surface surf Standard fullforwardshadows
         #pragma target 3.0
-
-        // Use our custom AutoLight instead of Unity's built-in
-        #define USING_VSM_SHADOWS
-        #include "../Shaders/Include/VSMAutoLight.cginc"
 
         sampler2D _MainTex;
         half _Glossiness;
@@ -29,8 +26,6 @@ Shader "VSM/StandardSurface"
         struct Input
         {
             float2 uv_MainTex;
-            float3 worldPos;
-            UNITY_SHADOW_COORDS(1)
         };
 
         void surf (Input IN, inout SurfaceOutputStandard o)
@@ -43,25 +38,6 @@ Shader "VSM/StandardSurface"
             o.Metallic = _Metallic;
             o.Smoothness = _Glossiness;
             o.Alpha = c.a;
-        }
-
-        // Custom lighting to apply VSM shadows
-        half4 LightingStandard_VSM(SurfaceOutputStandard s, half3 viewDir, UnityGI gi)
-        {
-            // Standard PBR lighting
-            half4 pbr = LightingStandard(s, viewDir, gi);
-            return pbr;
-        }
-
-        inline void LightingStandard_GI_VSM(
-            SurfaceOutputStandard s,
-            UnityGIInput data,
-            inout UnityGI gi)
-        {
-            LightingStandard_GI(s, data, gi);
-
-            // Apply VSM shadow attenuation
-            gi.light.color *= VSM_SampleShadow(data.worldPos, 0.001);
         }
 
         ENDCG
