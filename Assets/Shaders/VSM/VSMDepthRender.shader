@@ -88,9 +88,14 @@ Shader "VSM/DepthRender"
                 // Look up page entry
                 uint pageEntry = _VirtualPageTable[wrappedCoords];
 
-                // Only write to allocated and dirty pages
-                if (!GetIsAllocated(pageEntry) || !GetIsDirty(pageEntry))
+                // TEMPORARILY DISABLE dirty check for debugging
+                // Only write to allocated pages (ignore dirty flag for now)
+                if (!GetIsAllocated(pageEntry))
                     discard;
+
+                // Original check (disabled for debugging):
+                // if (!GetIsAllocated(pageEntry) || !GetIsDirty(pageEntry))
+                //     discard;
 
                 // Get physical page coordinates
                 int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
