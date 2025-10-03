@@ -437,6 +437,17 @@ namespace VSM
 
             vsmCommandBuffer.Clear();
 
+            // IMPORTANT: Fragment shader需要一个渲染目标才会执行
+            // 虽然我们在shader中使用InterlockedMin直接写入_PhysicalMemory，
+            // 但仍需要设置一个渲染目标来触发fragment shader执行
+
+            // 创建临时深度纹理作为渲染目标
+            int tempDepthID = Shader.PropertyToID("_VSMTempDepth");
+            vsmCommandBuffer.GetTemporaryRT(tempDepthID,
+                VSMConstants.PAGE_SIZE, VSMConstants.PAGE_SIZE,
+                24, FilterMode.Point, RenderTextureFormat.Depth);
+            vsmCommandBuffer.SetRenderTarget(tempDepthID);
+
             // Set global shader properties for VSM rendering
             vsmCommandBuffer.SetGlobalTexture("_VirtualPageTable", pageTable.VirtualPageTableTexture);
             vsmCommandBuffer.SetGlobalTexture("_PhysicalMemory", physicalMemory.Texture);
@@ -449,6 +460,9 @@ namespace VSM
             // Render each cascade
             for (int cascadeIndex = 0; cascadeIndex < VSMConstants.CASCADE_COUNT; cascadeIndex++)
             {
+                // Clear depth buffer for this cascade
+                vsmCommandBuffer.ClearRenderTarget(true, false, Color.clear);
+
                 // Set current cascade index
                 vsmCommandBuffer.SetGlobalInt("_CurrentCascade", cascadeIndex);
 
@@ -488,6 +502,9 @@ namespace VSM
                     );
                 }
             }
+
+            // Release temporary RT
+            vsmCommandBuffer.ReleaseTemporaryRT(tempDepthID);
 
             // Execute the command buffer
             Graphics.ExecuteCommandBuffer(vsmCommandBuffer);
