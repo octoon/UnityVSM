@@ -488,13 +488,14 @@ namespace VSM
                     }
 
                     // Frustum culling against cascade
-                    Bounds bounds = renderer.bounds;
+                    // TEMPORARILY DISABLED for debugging
+                    /*Bounds bounds = renderer.bounds;
                     if (!IsInCascadeFrustum(bounds, cascadeIndex))
                     {
                         // DEBUG: Log culled objects
                         //Debug.Log($"[VSM] Culled {renderer.name} - outside cascade {cascadeIndex} frustum");
                         continue;
-                    }
+                    }*/
 
                     // HPB culling would go here - for now we render all objects in frustum
                     // See VSMCullAndDraw.compute for HPB culling implementation
