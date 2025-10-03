@@ -95,20 +95,23 @@ Shader "VSM/DepthRender"
                 // Get physical page coordinates
                 int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
 
-                // Calculate texel offset within the page (modulo operation)
-                int2 inPageTexelCoords = int2(virtualTexelCoords.x % VSM_PAGE_SIZE,
-                                               virtualTexelCoords.y % VSM_PAGE_SIZE);
+                // Calculate texel offset within the page (modulo operation - use uint for performance)
+                uint2 inPageTexelCoords = uint2((uint)virtualTexelCoords.x % (uint)VSM_PAGE_SIZE,
+                                                 (uint)virtualTexelCoords.y % (uint)VSM_PAGE_SIZE);
 
                 // Calculate final physical memory texel coordinates
                 int2 inMemoryOffset = physicalPageCoords * VSM_PAGE_SIZE;
-                int2 memoryTexelCoords = inMemoryOffset + inPageTexelCoords;
+                uint2 memoryTexelCoords = uint2(inMemoryOffset) + inPageTexelCoords;
 
                 // Paper Listing 12.3: Use gl_FragCoord.z (hardware-interpolated depth)
                 // In Unity, i.pos.z contains the clip-space depth after rasterization
                 float fragmentDepth = i.pos.z;
 
                 // Write depth using atomic min (paper Listing 12.3)
-                InterlockedMin(_PhysicalMemory[memoryTexelCoords], asuint(fragmentDepth));
+                // InterlockedMin requires scalar uint, so we write per-component
+                uint depthAsUint = asuint(fragmentDepth);
+                uint originalValue;
+                InterlockedMin(_PhysicalMemory[int2(memoryTexelCoords)], depthAsUint, originalValue);
 
                 // Output depth to depth buffer
                 depth = fragmentDepth;

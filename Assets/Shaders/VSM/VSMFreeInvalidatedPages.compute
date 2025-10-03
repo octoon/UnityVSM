@@ -15,9 +15,9 @@ int _CurrentCascade;
 // Extract bit from bitmask for a page
 bool ExtractPageBitFromMask(int3 pageCoords, uint mask)
 {
-    int linearIndex = pageCoords.y * VSM_PAGE_TABLE_RESOLUTION + pageCoords.x;
-    int maskIndex = linearIndex / 32;
-    int bitIndex = linearIndex % 32;
+    uint linearIndex = (uint)(pageCoords.y * VSM_PAGE_TABLE_RESOLUTION + pageCoords.x);
+    uint maskIndex = linearIndex / 32u;
+    uint bitIndex = linearIndex % 32u;
 
     // Simple version - would need proper indexing for full implementation
     return (mask & (1u << bitIndex)) != 0;
@@ -46,7 +46,7 @@ void FreeInvalidatedPages(uint3 id : SV_DispatchThreadID)
 
     // Check if page should be cleared due to dynamic objects
     bool shouldClearDynamic = false;
-    if (_DynamicInvalidationMasks.Length > _CurrentCascade)
+    if ((uint)_DynamicInvalidationMasks.Length > (uint)_CurrentCascade)
     {
         shouldClearDynamic = ExtractPageBitFromMask(pageCoords, _DynamicInvalidationMasks[_CurrentCascade]);
     }

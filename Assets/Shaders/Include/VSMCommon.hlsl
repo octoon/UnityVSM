@@ -62,12 +62,13 @@ int3 VirtualPageCoordsToWrappedCoords(int3 pageCoords, int2 cascadeOffset)
     }
 
     int2 offsetPageCoords = pageCoords.xy + cascadeOffset;
-    int2 wrappedPageCoords = int2(
-        offsetPageCoords.x % VSM_PAGE_TABLE_RESOLUTION,
-        offsetPageCoords.y % VSM_PAGE_TABLE_RESOLUTION
-    );
 
-    // Handle negative modulo
+    // Proper modulo for negative numbers using uint operations
+    // This avoids signed modulo warnings and handles wraparound correctly
+    int2 wrappedPageCoords;
+    wrappedPageCoords.x = offsetPageCoords.x % (int)VSM_PAGE_TABLE_RESOLUTION;
+    wrappedPageCoords.y = offsetPageCoords.y % (int)VSM_PAGE_TABLE_RESOLUTION;
+
     if (wrappedPageCoords.x < 0) wrappedPageCoords.x += VSM_PAGE_TABLE_RESOLUTION;
     if (wrappedPageCoords.y < 0) wrappedPageCoords.y += VSM_PAGE_TABLE_RESOLUTION;
 

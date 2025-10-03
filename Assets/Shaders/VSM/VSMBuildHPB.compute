@@ -15,7 +15,7 @@ int _Resolution;
 [numthreads(8, 8, 1)]
 void BuildHPB(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= _Resolution || id.y >= _Resolution || id.z >= VSM_CASCADE_COUNT)
+    if (id.x >= (uint)_Resolution || id.y >= (uint)_Resolution || id.z >= (uint)VSM_CASCADE_COUNT)
         return;
 
     float dirtyValue = 0.0;
