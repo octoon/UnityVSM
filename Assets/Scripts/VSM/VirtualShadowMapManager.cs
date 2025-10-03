@@ -345,6 +345,9 @@ namespace VSM
                 allocationCounterBuffer.GetData(counts);
                 uint allocationRequestCount = counts[0];
 
+                // DEBUG: Log allocation request count
+                Debug.Log($"[VSM AllocationPhase] Allocation requests: {allocationRequestCount}");
+
                 if (allocationRequestCount > 0)
                 {
                     // Reset allocation counters
@@ -376,6 +379,13 @@ namespace VSM
                     threadGroups = Mathf.Min(threadGroups, 65535);
 
                     allocatePagesShader.Dispatch(allocKernel, threadGroups, 1, 1);
+
+                    // DEBUG: Log allocated pages
+                    Debug.Log($"[VSM AllocationPhase] Allocated {allocationRequestCount} pages (free: {pageCounts[0]}, used: {pageCounts[1]})");
+                }
+                else
+                {
+                    Debug.LogWarning("[VSM AllocationPhase] No allocation requests! Pages not being marked as visible.");
                 }
             }
 
