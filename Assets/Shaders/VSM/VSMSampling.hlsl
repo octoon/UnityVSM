@@ -5,8 +5,32 @@
 
 // Virtual Page Table and Physical Memory
 Texture2DArray<uint> _VSM_VirtualPageTable;
-Texture2D<uint> _VSM_PhysicalMemory;  // Stored as uint for atomic operations
-SamplerState sampler_VSM_PhysicalMemory;
+Texture2D<uint> _VSM_PhysicalMemory;  // Stored as uint for atomic operations (use Load, not Sample)
+
+// Helper function to load and convert depth from uint to float
+float LoadPhysicalMemoryDepth(int2 pixel)
+{
+    uint depthUint = _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
+    return asfloat(depthUint);
+}
+
+// Manual bilinear filtering for uint texture
+float SamplePhysicalMemoryBilinear(float2 uv)
+{
+    float2 texSize = float2(VSM_PHYSICAL_MEMORY_WIDTH, VSM_PHYSICAL_MEMORY_HEIGHT);
+    float2 pixelCoord = uv * texSize - 0.5;
+    int2 pixelInt = int2(floor(pixelCoord));
+    float2 frac = pixelCoord - pixelInt;
+
+    float d00 = LoadPhysicalMemoryDepth(pixelInt + int2(0, 0));
+    float d10 = LoadPhysicalMemoryDepth(pixelInt + int2(1, 0));
+    float d01 = LoadPhysicalMemoryDepth(pixelInt + int2(0, 1));
+    float d11 = LoadPhysicalMemoryDepth(pixelInt + int2(1, 1));
+
+    float d0 = lerp(d00, d10, frac.x);
+    float d1 = lerp(d01, d11, frac.x);
+    return lerp(d0, d1, frac.y);
+}
 
 // Cascade data
 StructuredBuffer<float4x4> _VSM_CascadeLightMatrices;
@@ -54,12 +78,11 @@ float SampleVSM(float3 worldPos, float bias = 0.001)
     // Calculate UV within the page
     float2 pageUV = frac(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION);
 
-    // Calculate physical texture coordinates
-    float2 physicalUV = (physicalPageCoords + pageUV) * VSM_PAGE_SIZE / float2(VSM_PHYSICAL_MEMORY_WIDTH, VSM_PHYSICAL_MEMORY_HEIGHT);
+    // Calculate physical pixel coordinates
+    int2 physicalPixel = int2((physicalPageCoords + pageUV) * VSM_PAGE_SIZE);
 
-    // Sample physical memory and convert from uint to float
-    uint shadowDepthUint = _VSM_PhysicalMemory.SampleLevel(sampler_VSM_PhysicalMemory, physicalUV, 0).r;
-    float shadowDepth = asfloat(shadowDepthUint);
+    // Load depth from physical memory
+    float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
 
     // Compare depth
     float currentDepth = lightSpacePos.z;
@@ -114,10 +137,9 @@ float SampleVSM_PCF(float3 worldPos, float filterSize = 2.0, float bias = 0.001)
 
             int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
             float2 pageUV = frac(sampleUV * VSM_PAGE_TABLE_RESOLUTION);
-            float2 physicalUV = (physicalPageCoords + pageUV) * VSM_PAGE_SIZE / float2(VSM_PHYSICAL_MEMORY_WIDTH, VSM_PHYSICAL_MEMORY_HEIGHT);
 
-            uint shadowDepthUint = _VSM_PhysicalMemory.SampleLevel(sampler_VSM_PhysicalMemory, physicalUV, 0).r;
-            float shadowDepth = asfloat(shadowDepthUint);
+            int2 physicalPixel = int2((physicalPageCoords + pageUV) * VSM_PAGE_SIZE);
+            float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
             float currentDepth = lightSpacePos.z;
 
             shadow += (currentDepth - bias) > shadowDepth ? 0.0 : 1.0;

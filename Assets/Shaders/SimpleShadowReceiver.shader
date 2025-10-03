@@ -38,8 +38,7 @@ Shader "VSM/SimpleShadowReceiver"
 
             // VSM globals
             Texture2DArray<uint> _VSM_VirtualPageTable;
-            Texture2D<uint> _VSM_PhysicalMemory;  // Stored as uint
-            SamplerState sampler_VSM_PhysicalMemory;
+            Texture2D<uint> _VSM_PhysicalMemory;  // Stored as uint (use Load)
             StructuredBuffer<float4x4> _VSM_CascadeLightMatrices;
             StructuredBuffer<int2> _VSM_CascadeOffsets;
             float _VSM_FirstCascadeSize;
@@ -114,9 +113,11 @@ Shader "VSM/SimpleShadowReceiver"
 
                 int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
                 float2 pageUV = frac(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION);
-                float2 physicalUV = (physicalPageCoords + pageUV) * VSM_PAGE_SIZE / float2(VSM_PHYSICAL_MEMORY_WIDTH, VSM_PHYSICAL_MEMORY_HEIGHT);
 
-                uint shadowDepthUint = _VSM_PhysicalMemory.SampleLevel(sampler_VSM_PhysicalMemory, physicalUV, 0).r;
+                // Calculate pixel coordinates (cannot sample uint textures, must use Load)
+                int2 physicalPixel = int2((physicalPageCoords + pageUV) * VSM_PAGE_SIZE);
+
+                uint shadowDepthUint = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
                 float shadowDepth = asfloat(shadowDepthUint);
                 float currentDepth = lightSpacePos.z;
 
