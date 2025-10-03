@@ -26,6 +26,7 @@ namespace VSM
         [SerializeField] private ComputeShader markVisiblePagesShader;
         [SerializeField] private ComputeShader allocatePagesShader;
         [SerializeField] private ComputeShader clearPagesShader;
+        [SerializeField] private ComputeShader clearMemoryShader;  // Clear physical memory to 1.0
         [SerializeField] private ComputeShader buildHPBShader;
 
         [Header("Rendering")]
@@ -84,7 +85,7 @@ namespace VSM
             // Create core components
             pageTable = new VSMPageTable();
             physicalPageTable = new VSMPhysicalPageTable();
-            physicalMemory = new VSMPhysicalMemory();
+            physicalMemory = new VSMPhysicalMemory(clearMemoryShader);
             hpb = new VSMHierarchicalPageBuffer(buildHPBShader);
 
             // Initialize cascade data

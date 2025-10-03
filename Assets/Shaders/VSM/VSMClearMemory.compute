@@ -1,0 +1,10 @@
+#pragma kernel ClearToOne
+
+RWTexture2D<uint> _Target;
+
+[numthreads(8, 8, 1)]
+void ClearToOne(uint3 id : SV_DispatchThreadID)
+{
+    // Store 1.0 as uint (IEEE 754: 0x3F800000)
+    _Target[id.xy] = asuint(1.0);
+}

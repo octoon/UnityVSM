@@ -2,8 +2,8 @@
 
 #include "../Include/VSMCommon.hlsl"
 
-// Physical memory texture
-RWTexture2D<float> _PhysicalMemory;
+// Physical memory texture - use uint for atomic operations
+RWTexture2D<uint> _PhysicalMemory;
 
 // Allocation requests (these pages are dirty and need clearing)
 struct AllocationRequest
@@ -50,6 +50,6 @@ void ClearDirtyPages(uint3 id : SV_DispatchThreadID)
     int2 texelCoordsInPage = id.xy;
     int2 physicalTexelCoords = physicalPageCoords * VSM_PAGE_SIZE + texelCoordsInPage;
 
-    // Clear to far plane (1.0)
-    _PhysicalMemory[physicalTexelCoords] = 1.0;
+    // Clear to far plane (1.0) - store as uint representation
+    _PhysicalMemory[physicalTexelCoords] = asuint(1.0);
 }

@@ -46,8 +46,8 @@ Shader "VSM/DepthRender"
             StructuredBuffer<int2> _CascadeOffsets;
             uint _CurrentCascade;
 
-            // Physical memory
-            RWTexture2D<float> _PhysicalMemory;
+            // Physical memory - use uint for InterlockedMin support
+            RWTexture2D<uint> _PhysicalMemory;
 
             v2f vert(appdata v)
             {
@@ -108,10 +108,9 @@ Shader "VSM/DepthRender"
                 float fragmentDepth = i.pos.z;
 
                 // Write depth using atomic min (paper Listing 12.3)
-                // InterlockedMin requires scalar uint, so we write per-component
+                // Convert depth to uint for atomic operations
                 uint depthAsUint = asuint(fragmentDepth);
-                uint originalValue;
-                InterlockedMin(_PhysicalMemory[int2(memoryTexelCoords)], depthAsUint, originalValue);
+                InterlockedMin(_PhysicalMemory[memoryTexelCoords], depthAsUint);
 
                 // Output depth to depth buffer
                 depth = fragmentDepth;

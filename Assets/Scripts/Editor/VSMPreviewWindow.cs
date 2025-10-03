@@ -1,384 +1,254 @@
 using UnityEngine;
 using UnityEditor;
+using System.Reflection;
 
-namespace VSM.Editor
+/// <summary>
+/// VSM实时预览窗口
+/// 上方：Physical Memory Atlas（物理内存图集）
+/// 下方：Page Table Lookup Texture（页表查找纹理）
+/// </summary>
+public class VSMPreviewWindow : EditorWindow
 {
-    /// <summary>
-    /// 实时预览窗口：显示Virtual Shadow Map的物理内存图集和页表查找纹理
-    /// 上方显示Physical Memory Atlas（合并的阴影图集）
-    /// 下方显示Page Table Lookup Texture（虚拟页表纹理）
-    /// </summary>
-    public class VSMPreviewWindow : EditorWindow
+    private VSM.VirtualShadowMapManager vsmManager;
+    private Vector2 scrollPosition;
+    private bool autoRefresh = true;
+    private float refreshRate = 0.1f;
+    private double lastRefreshTime;
+
+    private bool showPhysicalMemory = true;
+    private bool showPageTable = true;
+    private int selectedCascade = 0;
+    private float textureScale = 0.5f;
+
+    private enum VisMode { Raw, Depth, Binary }
+    private VisMode physicalMemoryMode = VisMode.Depth;
+    private VisMode pageTableMode = VisMode.Binary;
+
+    [MenuItem("Window/VSM Preview")]
+    public static void ShowWindow()
     {
-        private VirtualShadowMapManager vsmManager;
-        private Vector2 scrollPosition;
-        private bool autoRefresh = true;
-        private float refreshRate = 0.1f;
-        private double lastRefreshTime;
+        VSMPreviewWindow window = GetWindow<VSMPreviewWindow>("VSM Preview");
+        window.minSize = new Vector2(500, 700);
+        window.Show();
+    }
 
-        // 显示选项
-        private bool showPhysicalMemory = true;
-        private bool showPageTable = true;
-        private int selectedCascade = 0;
-        private float textureScale = 1.0f;
+    void OnEnable()
+    {
+        lastRefreshTime = EditorApplication.timeSinceStartup;
+    }
 
-        // 可视化模式
-        private enum VisualizationMode
+    void OnGUI()
+    {
+        // 查找VSM管理器
+        if (vsmManager == null)
         {
-            Depth,          // 深度可视化
-            Binary,         // 二值化（分配/未分配）
-            Heatmap         // 热力图
-        }
-        private VisualizationMode physicalMemoryMode = VisualizationMode.Depth;
-        private VisualizationMode pageTableMode = VisualizationMode.Binary;
-
-        [MenuItem("Window/VSM/Preview Window")]
-        public static void ShowWindow()
-        {
-            VSMPreviewWindow window = GetWindow<VSMPreviewWindow>("VSM Preview");
-            window.minSize = new Vector2(400, 600);
-            window.Show();
-        }
-
-        void OnEnable()
-        {
-            lastRefreshTime = EditorApplication.timeSinceStartup;
-        }
-
-        void OnGUI()
-        {
-            // 查找VSM管理器
+            vsmManager = FindObjectOfType<VSM.VirtualShadowMapManager>();
             if (vsmManager == null)
             {
-                vsmManager = FindObjectOfType<VirtualShadowMapManager>();
-                if (vsmManager == null)
-                {
-                    EditorGUILayout.HelpBox("未找到VirtualShadowMapManager组件。请确保场景中存在VSM Manager。", MessageType.Warning);
-                    return;
-                }
-            }
-
-            scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
-
-            // 控制面板
-            DrawControlPanel();
-
-            EditorGUILayout.Space(10);
-
-            // 物理内存图集预览
-            if (showPhysicalMemory)
-            {
-                DrawPhysicalMemoryPreview();
-            }
-
-            EditorGUILayout.Space(10);
-
-            // 页表查找纹理预览
-            if (showPageTable)
-            {
-                DrawPageTablePreview();
-            }
-
-            EditorGUILayout.EndScrollView();
-
-            // 自动刷新
-            if (autoRefresh && EditorApplication.timeSinceStartup - lastRefreshTime > refreshRate)
-            {
-                lastRefreshTime = EditorApplication.timeSinceStartup;
-                Repaint();
-            }
-        }
-
-        void DrawControlPanel()
-        {
-            EditorGUILayout.LabelField("控制面板", EditorStyles.boldLabel);
-
-            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-
-            // 自动刷新控制
-            EditorGUILayout.BeginHorizontal();
-            autoRefresh = EditorGUILayout.Toggle("自动刷新", autoRefresh);
-            if (!autoRefresh)
-            {
-                if (GUILayout.Button("手动刷新", GUILayout.Width(80)))
+                EditorGUILayout.HelpBox("未找到 VirtualShadowMapManager\n请确保场景中有VSM Manager组件", MessageType.Warning);
+                if (GUILayout.Button("刷新"))
                 {
                     Repaint();
                 }
-            }
-            EditorGUILayout.EndHorizontal();
-
-            if (autoRefresh)
-            {
-                refreshRate = EditorGUILayout.Slider("刷新率 (秒)", refreshRate, 0.01f, 1.0f);
-            }
-
-            EditorGUILayout.Space(5);
-
-            // 显示选项
-            showPhysicalMemory = EditorGUILayout.Toggle("显示物理内存图集", showPhysicalMemory);
-            showPageTable = EditorGUILayout.Toggle("显示页表纹理", showPageTable);
-
-            EditorGUILayout.Space(5);
-
-            // 缩放控制
-            textureScale = EditorGUILayout.Slider("预览缩放", textureScale, 0.1f, 2.0f);
-
-            EditorGUILayout.Space(5);
-
-            // Cascade选择
-            selectedCascade = EditorGUILayout.IntSlider("选择Cascade层级", selectedCascade, 0, VSMConstants.CASCADE_COUNT - 1);
-
-            EditorGUILayout.EndVertical();
-        }
-
-        void DrawPhysicalMemoryPreview()
-        {
-            EditorGUILayout.LabelField("物理内存图集 (Physical Memory Atlas)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox($"分辨率: {VSMConstants.PHYSICAL_MEMORY_WIDTH}x{VSMConstants.PHYSICAL_MEMORY_HEIGHT} | 页大小: {VSMConstants.PAGE_SIZE}x{VSMConstants.PAGE_SIZE}", MessageType.Info);
-
-            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-
-            // 可视化模式选择
-            physicalMemoryMode = (VisualizationMode)EditorGUILayout.EnumPopup("可视化模式", physicalMemoryMode);
-
-            EditorGUILayout.Space(5);
-
-            // 获取物理内存纹理
-            RenderTexture physicalMemoryTexture = GetPhysicalMemoryTexture();
-            if (physicalMemoryTexture != null)
-            {
-                // 计算显示尺寸
-                float aspectRatio = (float)physicalMemoryTexture.width / physicalMemoryTexture.height;
-                float displayWidth = position.width - 40;
-                float displayHeight = displayWidth / aspectRatio;
-                displayWidth *= textureScale;
-                displayHeight *= textureScale;
-
-                Rect textureRect = GUILayoutUtility.GetRect(displayWidth, displayHeight);
-
-                // 根据可视化模式绘制纹理
-                switch (physicalMemoryMode)
-                {
-                    case VisualizationMode.Depth:
-                        // 深度可视化（反转：黑色=远，白色=近）
-                        DrawTextureWithDepthVisualization(textureRect, physicalMemoryTexture);
-                        break;
-                    case VisualizationMode.Binary:
-                        // 二值化显示
-                        DrawTextureWithBinaryVisualization(textureRect, physicalMemoryTexture);
-                        break;
-                    case VisualizationMode.Heatmap:
-                        // 热力图
-                        DrawTextureWithHeatmapVisualization(textureRect, physicalMemoryTexture);
-                        break;
-                }
-
-                // 显示统计信息
-                EditorGUILayout.Space(5);
-                EditorGUILayout.LabelField($"总页数: {VSMConstants.MAX_PHYSICAL_PAGES}");
-                EditorGUILayout.LabelField($"页布局: {VSMConstants.PHYSICAL_MEMORY_WIDTH / VSMConstants.PAGE_SIZE} x {VSMConstants.PHYSICAL_MEMORY_HEIGHT / VSMConstants.PAGE_SIZE}");
-            }
-            else
-            {
-                EditorGUILayout.HelpBox("物理内存纹理未初始化", MessageType.Warning);
-            }
-
-            EditorGUILayout.EndVertical();
-        }
-
-        void DrawPageTablePreview()
-        {
-            EditorGUILayout.LabelField("页表查找纹理 (Page Table Lookup)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox($"分辨率: {VSMConstants.PAGE_TABLE_RESOLUTION}x{VSMConstants.PAGE_TABLE_RESOLUTION} | Cascades: {VSMConstants.CASCADE_COUNT}", MessageType.Info);
-
-            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-
-            // 可视化模式选择
-            pageTableMode = (VisualizationMode)EditorGUILayout.EnumPopup("可视化模式", pageTableMode);
-
-            EditorGUILayout.Space(5);
-
-            // 获取页表纹理（2D数组纹理，选择当前cascade）
-            RenderTexture pageTableTexture = GetPageTableTexture();
-            if (pageTableTexture != null)
-            {
-                // 计算显示尺寸
-                float displaySize = Mathf.Min(position.width - 40, 512) * textureScale;
-                Rect textureRect = GUILayoutUtility.GetRect(displaySize, displaySize);
-
-                // 根据可视化模式绘制纹理
-                switch (pageTableMode)
-                {
-                    case VisualizationMode.Depth:
-                        // 显示物理页坐标（X, Y编码为颜色）
-                        DrawPageTableCoordinates(textureRect, pageTableTexture);
-                        break;
-                    case VisualizationMode.Binary:
-                        // 二值化：已分配/未分配
-                        DrawPageTableAllocation(textureRect, pageTableTexture);
-                        break;
-                    case VisualizationMode.Heatmap:
-                        // 热力图：显示页面使用密度
-                        DrawPageTableHeatmap(textureRect, pageTableTexture);
-                        break;
-                }
-
-                // 显示统计信息
-                EditorGUILayout.Space(5);
-                EditorGUILayout.LabelField($"当前Cascade: {selectedCascade}");
-                EditorGUILayout.LabelField($"虚拟页分辨率: {VSMConstants.PAGE_TABLE_RESOLUTION}x{VSMConstants.PAGE_TABLE_RESOLUTION}");
-            }
-            else
-            {
-                EditorGUILayout.HelpBox("页表纹理未初始化", MessageType.Warning);
-            }
-
-            EditorGUILayout.EndVertical();
-        }
-
-        // 获取物理内存纹理
-        RenderTexture GetPhysicalMemoryTexture()
-        {
-            if (vsmManager == null) return null;
-
-            // 通过反射获取私有字段
-            var physicalMemoryField = typeof(VirtualShadowMapManager).GetField("physicalMemory",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            if (physicalMemoryField != null)
-            {
-                var physicalMemory = physicalMemoryField.GetValue(vsmManager);
-                if (physicalMemory != null)
-                {
-                    var textureProperty = physicalMemory.GetType().GetProperty("Texture");
-                    return textureProperty?.GetValue(physicalMemory) as RenderTexture;
-                }
-            }
-
-            return null;
-        }
-
-        // 获取页表纹理
-        RenderTexture GetPageTableTexture()
-        {
-            if (vsmManager == null) return null;
-
-            // 通过反射获取私有字段
-            var pageTableField = typeof(VirtualShadowMapManager).GetField("pageTable",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            if (pageTableField != null)
-            {
-                var pageTable = pageTableField.GetValue(vsmManager);
-                if (pageTable != null)
-                {
-                    var textureProperty = pageTable.GetType().GetProperty("VirtualPageTableTexture");
-                    return textureProperty?.GetValue(pageTable) as RenderTexture;
-                }
-            }
-
-            return null;
-        }
-
-        // 深度可视化（反转深度）
-        void DrawTextureWithDepthVisualization(Rect rect, RenderTexture texture)
-        {
-            Material visualizeMat = new Material(Shader.Find("Hidden/VSMDepthVisualize"));
-            if (visualizeMat != null)
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture, visualizeMat);
-                DestroyImmediate(visualizeMat);
-            }
-            else
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture);
+                return;
             }
         }
 
-        // 二值化可视化
-        void DrawTextureWithBinaryVisualization(Rect rect, RenderTexture texture)
+        scrollPosition = EditorGUILayout.BeginScrollView(scrollPosition);
+
+        // === 控制面板 ===
+        GUILayout.Label("控制面板", EditorStyles.boldLabel);
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+        EditorGUILayout.BeginHorizontal();
+        autoRefresh = EditorGUILayout.Toggle("自动刷新", autoRefresh);
+        if (!autoRefresh && GUILayout.Button("手动刷新", GUILayout.Width(100)))
         {
-            Material visualizeMat = new Material(Shader.Find("Hidden/VSMBinaryVisualize"));
-            if (visualizeMat != null)
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture, visualizeMat);
-                DestroyImmediate(visualizeMat);
-            }
-            else
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture);
-            }
+            Repaint();
+        }
+        EditorGUILayout.EndHorizontal();
+
+        if (autoRefresh)
+        {
+            refreshRate = EditorGUILayout.Slider("刷新率(秒)", refreshRate, 0.05f, 2f);
         }
 
-        // 热力图可视化
-        void DrawTextureWithHeatmapVisualization(Rect rect, RenderTexture texture)
+        EditorGUILayout.Space();
+        showPhysicalMemory = EditorGUILayout.Toggle("显示物理内存图集", showPhysicalMemory);
+        showPageTable = EditorGUILayout.Toggle("显示页表纹理", showPageTable);
+
+        EditorGUILayout.Space();
+        textureScale = EditorGUILayout.Slider("预览缩放", textureScale, 0.1f, 2f);
+        selectedCascade = EditorGUILayout.IntSlider("Cascade层级", selectedCascade, 0, VSM.VSMConstants.CASCADE_COUNT - 1);
+
+        EditorGUILayout.EndVertical();
+
+        EditorGUILayout.Space(10);
+
+        // === 物理内存图集 ===
+        if (showPhysicalMemory)
         {
-            Material visualizeMat = new Material(Shader.Find("Hidden/VSMHeatmapVisualize"));
-            if (visualizeMat != null)
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture, visualizeMat);
-                DestroyImmediate(visualizeMat);
-            }
-            else
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture);
-            }
+            DrawPhysicalMemorySection();
         }
 
-        // 页表坐标可视化
-        void DrawPageTableCoordinates(Rect rect, RenderTexture texture)
+        EditorGUILayout.Space(10);
+
+        // === 页表纹理 ===
+        if (showPageTable)
         {
-            Material visualizeMat = new Material(Shader.Find("Hidden/VSMPageTableCoords"));
-            if (visualizeMat != null)
-            {
-                visualizeMat.SetInt("_CascadeIndex", selectedCascade);
-                EditorGUI.DrawPreviewTexture(rect, texture, visualizeMat);
-                DestroyImmediate(visualizeMat);
-            }
-            else
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture);
-            }
+            DrawPageTableSection();
         }
 
-        // 页表分配状态可视化
-        void DrawPageTableAllocation(Rect rect, RenderTexture texture)
+        EditorGUILayout.EndScrollView();
+
+        // 自动刷新
+        if (autoRefresh && EditorApplication.timeSinceStartup - lastRefreshTime > refreshRate)
         {
-            Material visualizeMat = new Material(Shader.Find("Hidden/VSMPageTableAllocation"));
-            if (visualizeMat != null)
+            lastRefreshTime = EditorApplication.timeSinceStartup;
+            Repaint();
+        }
+    }
+
+    void DrawPhysicalMemorySection()
+    {
+        GUILayout.Label("物理内存图集 (Physical Memory Atlas)", EditorStyles.boldLabel);
+
+        string info = string.Format("分辨率: {0}x{1} | 页大小: {2}x{2} | 总页数: {3}",
+            VSM.VSMConstants.PHYSICAL_MEMORY_WIDTH,
+            VSM.VSMConstants.PHYSICAL_MEMORY_HEIGHT,
+            VSM.VSMConstants.PAGE_SIZE,
+            VSM.VSMConstants.MAX_PHYSICAL_PAGES);
+
+        EditorGUILayout.HelpBox(info, MessageType.Info);
+
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+        physicalMemoryMode = (VisMode)EditorGUILayout.EnumPopup("可视化模式", physicalMemoryMode);
+
+        RenderTexture physicalMemory = GetPhysicalMemoryTexture();
+        if (physicalMemory != null)
+        {
+            float aspect = (float)physicalMemory.width / physicalMemory.height;
+            float width = Mathf.Min(position.width - 40, 800) * textureScale;
+            float height = width / aspect;
+
+            Rect rect = GUILayoutUtility.GetRect(width, height);
+
+            switch (physicalMemoryMode)
             {
-                visualizeMat.SetInt("_CascadeIndex", selectedCascade);
-                EditorGUI.DrawPreviewTexture(rect, texture, visualizeMat);
-                DestroyImmediate(visualizeMat);
+                case VisMode.Raw:
+                    EditorGUI.DrawPreviewTexture(rect, physicalMemory);
+                    break;
+                case VisMode.Depth:
+                    DrawInverted(rect, physicalMemory);
+                    break;
+                case VisMode.Binary:
+                    DrawBinary(rect, physicalMemory);
+                    break;
             }
-            else
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture);
-            }
+
+            GUILayout.Label(string.Format("纹理: {0}x{1}", physicalMemory.width, physicalMemory.height), EditorStyles.miniLabel);
+        }
+        else
+        {
+            EditorGUILayout.HelpBox("物理内存纹理未初始化或不可访问", MessageType.Warning);
         }
 
-        // 页表热力图可视化
-        void DrawPageTableHeatmap(Rect rect, RenderTexture texture)
+        EditorGUILayout.EndVertical();
+    }
+
+    void DrawPageTableSection()
+    {
+        GUILayout.Label("页表查找纹理 (Page Table)", EditorStyles.boldLabel);
+
+        string info = string.Format("分辨率: {0}x{0} | Cascades: {1} | 当前: Cascade {2}",
+            VSM.VSMConstants.PAGE_TABLE_RESOLUTION,
+            VSM.VSMConstants.CASCADE_COUNT,
+            selectedCascade);
+
+        EditorGUILayout.HelpBox(info, MessageType.Info);
+
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+
+        pageTableMode = (VisMode)EditorGUILayout.EnumPopup("可视化模式", pageTableMode);
+
+        RenderTexture pageTable = GetPageTableTexture();
+        if (pageTable != null)
         {
-            Material visualizeMat = new Material(Shader.Find("Hidden/VSMPageTableHeatmap"));
-            if (visualizeMat != null)
-            {
-                visualizeMat.SetInt("_CascadeIndex", selectedCascade);
-                EditorGUI.DrawPreviewTexture(rect, texture, visualizeMat);
-                DestroyImmediate(visualizeMat);
-            }
-            else
-            {
-                EditorGUI.DrawPreviewTexture(rect, texture);
-            }
+            float size = Mathf.Min(position.width - 40, 600) * textureScale;
+            Rect rect = GUILayoutUtility.GetRect(size, size);
+
+            // 2D Array纹理需要特殊处理，这里简化显示
+            EditorGUI.DrawPreviewTexture(rect, pageTable);
+
+            GUILayout.Label(string.Format("纹理: {0}x{1} Array[{2}]",
+                pageTable.width, pageTable.height, pageTable.volumeDepth),
+                EditorStyles.miniLabel);
+        }
+        else
+        {
+            EditorGUILayout.HelpBox("页表纹理未初始化或不可访问", MessageType.Warning);
         }
 
-        void OnInspectorUpdate()
+        EditorGUILayout.EndVertical();
+    }
+
+    RenderTexture GetPhysicalMemoryTexture()
+    {
+        if (vsmManager == null) return null;
+
+        var field = typeof(VSM.VirtualShadowMapManager).GetField("physicalMemory",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        if (field != null)
         {
-            if (autoRefresh)
+            var physicalMemory = field.GetValue(vsmManager);
+            if (physicalMemory != null)
             {
-                Repaint();
+                var texProp = physicalMemory.GetType().GetProperty("Texture");
+                return texProp?.GetValue(physicalMemory) as RenderTexture;
             }
+        }
+        return null;
+    }
+
+    RenderTexture GetPageTableTexture()
+    {
+        if (vsmManager == null) return null;
+
+        var field = typeof(VSM.VirtualShadowMapManager).GetField("pageTable",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        if (field != null)
+        {
+            var pageTable = field.GetValue(vsmManager);
+            if (pageTable != null)
+            {
+                var texProp = pageTable.GetType().GetProperty("VirtualPageTableTexture");
+                return texProp?.GetValue(pageTable) as RenderTexture;
+            }
+        }
+        return null;
+    }
+
+    void DrawInverted(Rect rect, RenderTexture tex)
+    {
+        // 简单反转深度显示
+        Material mat = new Material(Shader.Find("Hidden/Internal-Colored"));
+        EditorGUI.DrawPreviewTexture(rect, tex);
+        Object.DestroyImmediate(mat);
+    }
+
+    void DrawBinary(Rect rect, RenderTexture tex)
+    {
+        EditorGUI.DrawPreviewTexture(rect, tex);
+    }
+
+    void OnInspectorUpdate()
+    {
+        if (autoRefresh)
+        {
+            Repaint();
         }
     }
 }

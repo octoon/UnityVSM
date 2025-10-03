@@ -10,23 +10,26 @@ namespace VSM
     public class VSMPhysicalMemory
     {
         private RenderTexture physicalMemoryTexture;
+        private ComputeShader clearShader;
 
         public RenderTexture Texture => physicalMemoryTexture;
 
-        public VSMPhysicalMemory()
+        public VSMPhysicalMemory(ComputeShader clearMemoryShader = null)
         {
+            clearShader = clearMemoryShader;
             InitializeResources();
         }
 
         private void InitializeResources()
         {
             // Create large physical memory texture to store all pages
-            // Using R32_Float for depth storage
+            // Using R32_UInt for depth storage (required for InterlockedMin atomic operations)
+            // Depth values are stored as asuint(depth) for atomic min operations
             physicalMemoryTexture = new RenderTexture(
                 VSMConstants.PHYSICAL_MEMORY_WIDTH,
                 VSMConstants.PHYSICAL_MEMORY_HEIGHT,
                 0,
-                RenderTextureFormat.RFloat,
+                RenderTextureFormat.RInt,
                 RenderTextureReadWrite.Linear)
             {
                 enableRandomWrite = true,
@@ -36,15 +39,23 @@ namespace VSM
             };
             physicalMemoryTexture.Create();
 
-            // Clear to far plane (1.0)
+            // Clear to far plane (1.0 stored as uint)
             ClearMemory();
         }
 
         public void ClearMemory()
         {
-            RenderTexture.active = physicalMemoryTexture;
-            GL.Clear(false, true, new Color(1, 1, 1, 1));  // Clear to 1.0 (far plane)
-            RenderTexture.active = null;
+            // Clear uint texture to asuint(1.0) = 0x3F800000
+            if (clearShader != null)
+            {
+                int kernel = clearShader.FindKernel("ClearToOne");
+                clearShader.SetTexture(kernel, "_Target", physicalMemoryTexture);
+                clearShader.Dispatch(kernel,
+                    Mathf.CeilToInt(VSMConstants.PHYSICAL_MEMORY_WIDTH / 8.0f),
+                    Mathf.CeilToInt(VSMConstants.PHYSICAL_MEMORY_HEIGHT / 8.0f),
+                    1);
+            }
+            // If no clear shader, texture will be cleared by ClearPages during allocation
         }
 
         public void Release()
