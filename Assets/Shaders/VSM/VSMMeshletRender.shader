@@ -60,7 +60,7 @@ Shader "VSM/MeshletRender"
 
             // VSM数据
             Texture2DArray<uint> _VirtualPageTable;
-            RWTexture2D<float> _PhysicalMemory;
+            RWTexture2D<uint> _PhysicalMemory;  // Use uint for InterlockedMin
             StructuredBuffer<float4x4> _CascadeLightMatrices;
             StructuredBuffer<int2> _CascadeOffsets;
 
@@ -146,12 +146,14 @@ Shader "VSM/MeshletRender"
 
                 // 计算物理内存坐标
                 int2 physicalPage = UnpackPhysicalPageCoords(pageEntry);
-                int2 inPageOffset = virtualTexel % VSM_PAGE_SIZE;
-                int2 physicalTexel = physicalPage * VSM_PAGE_SIZE + inPageOffset;
+                uint2 inPageOffset = uint2((uint)virtualTexel.x % (uint)VSM_PAGE_SIZE,
+                                           (uint)virtualTexel.y % (uint)VSM_PAGE_SIZE);
+                uint2 physicalTexel = uint2(physicalPage * VSM_PAGE_SIZE) + inPageOffset;
 
                 // 论文: "an atomic min operation is used to store the new depth"
                 float fragmentDepth = i.pos.z;
-                InterlockedMin(_PhysicalMemory[physicalTexel], asuint(fragmentDepth));
+                uint depthAsUint = asuint(fragmentDepth);
+                InterlockedMin(_PhysicalMemory[physicalTexel], depthAsUint);
 
                 depth = fragmentDepth;
             }
