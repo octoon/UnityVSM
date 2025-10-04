@@ -29,7 +29,7 @@ namespace VSM
             EnsureInitialized();
         }
 
-        internal static void EnsureInitialized()
+        public static void EnsureInitialized()
         {
             if (s_initialized && IsBufferValid(s_cascadeLightMatricesBuffer) && IsBufferValid(s_cascadeOffsetsBuffer))
             {
