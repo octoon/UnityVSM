@@ -8,34 +8,91 @@ namespace VSM
     /// </summary>
     public static class VSMStaticInitializer
     {
+        internal static readonly int kVsmCascadeLightMatricesId = Shader.PropertyToID("_VSM_CascadeLightMatrices");
+        internal static readonly int kVsmCascadeOffsetsId = Shader.PropertyToID("_VSM_CascadeOffsets");
+        internal static readonly int kCascadeLightMatricesId = Shader.PropertyToID("_CascadeLightMatrices");
+        internal static readonly int kCascadeOffsetsId = Shader.PropertyToID("_CascadeOffsets");
+
         private static ComputeBuffer s_cascadeLightMatricesBuffer;
         private static ComputeBuffer s_cascadeOffsetsBuffer;
         private static bool s_initialized = false;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetStatics()
+        {
+            Cleanup();
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         static void InitializeBeforeScene()
         {
-            if (s_initialized) return;
+            EnsureInitialized();
+        }
 
-            Debug.Log("[VSM Static] Initializing dummy buffers before scene load...");
+        internal static void EnsureInitialized()
+        {
+            if (s_initialized && IsBufferValid(s_cascadeLightMatricesBuffer) && IsBufferValid(s_cascadeOffsetsBuffer))
+            {
+                BindGlobals();
+                return;
+            }
 
-            // Create minimal buffers to prevent shader errors
-            s_cascadeLightMatricesBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(float) * 16);
+            Debug.Log("[VSM Static] Initializing fallback buffers for VSM shaders");
+
+            Cleanup();
+
+            s_cascadeLightMatricesBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(float) * 16, ComputeBufferType.Structured);
             s_cascadeLightMatricesBuffer.SetData(new Matrix4x4[VSMConstants.CASCADE_COUNT]);
-            Shader.SetGlobalBuffer("_VSM_CascadeLightMatrices", s_cascadeLightMatricesBuffer);
 
-            s_cascadeOffsetsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
-            s_cascadeOffsetsBuffer.SetData(new int[VSMConstants.CASCADE_COUNT * 2]);
-            Shader.SetGlobalBuffer("_VSM_CascadeOffsets", s_cascadeOffsetsBuffer);
+            s_cascadeOffsetsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2, ComputeBufferType.Structured);
+            var zeroOffsets = new Vector2Int[VSMConstants.CASCADE_COUNT];
+            s_cascadeOffsetsBuffer.SetData(zeroOffsets);
 
+            BindGlobals();
             s_initialized = true;
-            Debug.Log("[VSM Static] Dummy buffers created and bound globally");
+        }
+
+        private static void BindGlobals()
+        {
+            if (!IsBufferValid(s_cascadeLightMatricesBuffer) || !IsBufferValid(s_cascadeOffsetsBuffer))
+                return;
+
+            Shader.SetGlobalBuffer(kVsmCascadeLightMatricesId, s_cascadeLightMatricesBuffer);
+            Shader.SetGlobalBuffer(kCascadeLightMatricesId, s_cascadeLightMatricesBuffer);
+            Shader.SetGlobalBuffer(kVsmCascadeOffsetsId, s_cascadeOffsetsBuffer);
+            Shader.SetGlobalBuffer(kCascadeOffsetsId, s_cascadeOffsetsBuffer);
+        }
+
+        private static bool IsBufferValid(ComputeBuffer buffer)
+        {
+            if (buffer == null)
+                return false;
+
+            try
+            {
+                buffer.GetNativeBufferPtr();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static void Cleanup()
         {
-            s_cascadeLightMatricesBuffer?.Release();
-            s_cascadeOffsetsBuffer?.Release();
+            if (s_cascadeLightMatricesBuffer != null)
+            {
+                s_cascadeLightMatricesBuffer.Release();
+                s_cascadeLightMatricesBuffer = null;
+            }
+
+            if (s_cascadeOffsetsBuffer != null)
+            {
+                s_cascadeOffsetsBuffer.Release();
+                s_cascadeOffsetsBuffer = null;
+            }
+
             s_initialized = false;
         }
     }
@@ -121,6 +178,7 @@ namespace VSM
 
         void Awake()
         {
+            VSMStaticInitializer.EnsureInitialized();
             mainCamera = GetComponent<Camera>();
         }
 
@@ -132,6 +190,8 @@ namespace VSM
 
         void InitializeVSM()
         {
+            VSMStaticInitializer.EnsureInitialized();
+
             // Create core components
             pageTable = new VSMPageTable();
             physicalPageTable = new VSMPhysicalPageTable();
@@ -816,8 +876,10 @@ namespace VSM
             // Bind VSM textures and buffers globally for sampling in materials
             Shader.SetGlobalTexture("_VSM_VirtualPageTable", pageTable.VirtualPageTableTexture);
             Shader.SetGlobalTexture("_VSM_PhysicalMemory", physicalMemory.Texture);
-            Shader.SetGlobalBuffer("_VSM_CascadeLightMatrices", cascadeLightMatricesBuffer);
-            Shader.SetGlobalBuffer("_VSM_CascadeOffsets", cascadeOffsetsBuffer);
+            Shader.SetGlobalBuffer(VSMStaticInitializer.kVsmCascadeLightMatricesId, cascadeLightMatricesBuffer);
+            Shader.SetGlobalBuffer(VSMStaticInitializer.kCascadeLightMatricesId, cascadeLightMatricesBuffer);
+            Shader.SetGlobalBuffer(VSMStaticInitializer.kVsmCascadeOffsetsId, cascadeOffsetsBuffer);
+            Shader.SetGlobalBuffer(VSMStaticInitializer.kCascadeOffsetsId, cascadeOffsetsBuffer);
             Shader.SetGlobalFloat("_VSM_FirstCascadeSize", firstCascadeSize);
             Shader.SetGlobalVector("_VSM_CameraPosition", mainCamera.transform.position);
 
