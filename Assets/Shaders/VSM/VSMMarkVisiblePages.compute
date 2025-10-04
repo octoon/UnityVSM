@@ -73,8 +73,18 @@ void MarkVisiblePages(uint3 id : SV_DispatchThreadID)
     float depth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, uv, 0);
 
     // Skip skybox/far plane
-    if (depth >= 1.0)
-        return;
+    // FIXED: Handle reversed Z properly
+    #if defined(UNITY_REVERSED_Z)
+        // DX12/Vulkan/Metal: near=1, far=0
+        // Skip if depth is 0 (far plane)
+        if (depth <= 0.0)
+            return;
+    #else
+        // OpenGL: near=0, far=1
+        // Skip if depth is 1 (far plane)
+        if (depth >= 1.0)
+            return;
+    #endif
 
     // Reconstruct world position
     float3 worldPos = ReconstructWorldPosition(uv, depth);

@@ -384,8 +384,16 @@ namespace VSM
                 markVisiblePagesShader.SetInt("_ScreenHeight", mainCamera.pixelHeight);
                 markVisiblePagesShader.SetInt("_FilterMargin", filterMargin);
 
-                // DEBUG: Log screen resolution
-                Debug.Log($"[VSM MarkVisible] Screen: {mainCamera.pixelWidth}×{mainCamera.pixelHeight} = {mainCamera.pixelWidth * mainCamera.pixelHeight} pixels");
+                // DEBUG: Log depth texture info
+                RenderTexture depthTex = GetDepthTexture();
+                if (depthTex != null)
+                {
+                    Debug.Log($"[VSM MarkVisible] Depth texture: {depthTex.width}×{depthTex.height}, format: {depthTex.format}");
+                }
+                else
+                {
+                    Debug.LogError("[VSM MarkVisible] Depth texture is null!");
+                }
 
                 // Cascade selection heuristic parameters
                 markVisiblePagesShader.SetInt("_UsePixelPerfectHeuristic", usePixelPerfectHeuristic ? 1 : 0);
@@ -425,11 +433,10 @@ namespace VSM
                 allocationCounterBuffer.GetData(counts);
                 uint allocationRequestCount = counts[0];
 
-                // DEBUG: Log allocation request count
-                Debug.Log($"[VSM AllocationPhase] Allocation requests: {allocationRequestCount}");
-
+                // DEBUG: Only log if there are requests
                 if (allocationRequestCount > 0)
                 {
+                    Debug.Log($"[VSM AllocationPhase] Allocation requests: {allocationRequestCount}");
                     // Reset allocation counters
                     allocationCounterBuffer.SetData(new uint[] { 0, 0 });
 
@@ -482,10 +489,6 @@ namespace VSM
                         Debug.Log($"[VSM DEBUG] VPT state: Allocated={debugCounts[0]}, Visible={debugCounts[1]}, Dirty={debugCounts[2]}");
                         countBuffer.Release();
                     }
-                }
-                else
-                {
-                    Debug.LogWarning("[VSM AllocationPhase] No allocation requests! Pages not being marked as visible.");
                 }
             }
 
