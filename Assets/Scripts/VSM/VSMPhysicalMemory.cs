@@ -21,7 +21,7 @@ namespace VSM
         {
             clearShader = clearMemoryShader;
             copyBufferToTextureShader = copyShader;
-            Debug.LogWarning($"[VSM PhysicalMemory] CONSTRUCTOR called! Stack trace:\n{System.Environment.StackTrace}");
+            // Removed debug stack trace logging
             InitializeResources();
         }
 
@@ -52,23 +52,18 @@ namespace VSM
 
         public void ClearMemory()
         {
-            Debug.Log($"[VSM PhysicalMemory] ClearMemory() called - clearing {physicalMemoryBuffer.count} texels");
-
-            // TEMP: Force CPU clear for debugging
-            Debug.LogWarning("[VSM PhysicalMemory] FORCING CPU clear for debugging");
+            // Clear physical memory buffer to far plane (1.0)
             int totalTexels = VSMConstants.PHYSICAL_MEMORY_WIDTH * VSMConstants.PHYSICAL_MEMORY_HEIGHT;
             uint[] clearData = new uint[totalTexels];
-            uint farPlane = asuint(1.0f);
-            Debug.Log($"[VSM PhysicalMemory] Filling array with value 0x{farPlane:X8} (should be 0x3F800000 for 1.0f)");
+            uint farPlane = asuint(1.0f);  // 0x3F800000
 
             for (int i = 0; i < totalTexels; i++)
             {
                 clearData[i] = farPlane;
             }
 
-            Debug.Log($"[VSM PhysicalMemory] Array filled, calling SetData...");
             physicalMemoryBuffer.SetData(clearData);
-            Debug.Log($"[VSM PhysicalMemory] CPU clear completed successfully. Buffer InstanceID: {physicalMemoryBuffer.GetNativeBufferPtr().ToInt64():X}");
+            Debug.Log($"[VSM PhysicalMemory] Cleared {totalTexels} texels to far plane (1.0f)");
             return;
 
             // Old GPU clear code (disabled for debugging)
