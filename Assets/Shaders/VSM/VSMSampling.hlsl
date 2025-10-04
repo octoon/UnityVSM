@@ -79,7 +79,8 @@ float SampleVSM(float3 worldPos, float bias = 0.001)
     float2 pageUV = frac(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION);
 
     // Calculate physical pixel coordinates
-    int2 physicalPixel = int2((physicalPageCoords + pageUV) * VSM_PAGE_SIZE);
+    // FIXED: Correct formula: page_base_pixel + in_page_offset
+    int2 physicalPixel = physicalPageCoords * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
 
     // Load depth from physical memory
     float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
@@ -138,7 +139,8 @@ float SampleVSM_PCF(float3 worldPos, float filterSize = 2.0, float bias = 0.001)
             int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
             float2 pageUV = frac(sampleUV * VSM_PAGE_TABLE_RESOLUTION);
 
-            int2 physicalPixel = int2((physicalPageCoords + pageUV) * VSM_PAGE_SIZE);
+            // FIXED: Correct formula: page_base_pixel + in_page_offset
+            int2 physicalPixel = physicalPageCoords * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
             float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
             float currentDepth = lightSpacePos.z;
 
@@ -148,6 +150,62 @@ float SampleVSM_PCF(float3 worldPos, float filterSize = 2.0, float bias = 0.001)
     }
 
     return totalWeight > 0.0 ? shadow / totalWeight : 1.0;
+}
+
+// OPTIMIZED: Version that reuses pre-calculated cascade level
+// Use this when sampling multiple times for the same world position
+float SampleVSMWithCascade(float3 worldPos, int cascadeLevel, float bias = 0.001)
+{
+    // Transform to light space
+    float4x4 lightMatrix = _VSM_CascadeLightMatrices[cascadeLevel];
+    float4 lightSpacePos = mul(lightMatrix, float4(worldPos, 1.0));
+    float2 lightSpaceUV = lightSpacePos.xy * 0.5 + 0.5;
+
+    // Check bounds
+    if (any(lightSpaceUV < 0.0) || any(lightSpaceUV > 1.0))
+        return 1.0;  // No shadow
+
+    // Calculate page coordinates
+    int3 pageCoords = int3(
+        floor(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION),
+        cascadeLevel
+    );
+
+    // Convert to wrapped coordinates
+    int2 cascadeOffset = _VSM_CascadeOffsets[cascadeLevel];
+    int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+
+    if (wrappedCoords.x < 0)
+        return 1.0;
+
+    // Look up page entry
+    uint pageEntry = _VSM_VirtualPageTable[wrappedCoords];
+
+    if (!GetIsAllocated(pageEntry))
+        return 1.0;  // Page not allocated, assume no shadow
+
+    // Get physical page coordinates
+    int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
+
+    // Calculate UV within the page
+    float2 pageUV = frac(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION);
+
+    // Calculate physical pixel coordinates
+    // FIXED: Correct formula: page_base_pixel + in_page_offset
+    int2 physicalPixel = physicalPageCoords * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
+
+    // Load depth from physical memory
+    float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
+
+    // Compare depth
+    float currentDepth = lightSpacePos.z;
+    return (currentDepth - bias) > shadowDepth ? 0.0 : 1.0;
+}
+
+// Helper function to pre-calculate cascade level for optimization
+int SelectCascadeLevel(float3 worldPos)
+{
+    return CalculateCascadeLevel(worldPos, _VSM_CameraPosition, _VSM_FirstCascadeSize);
 }
 
 #endif // VSM_SAMPLING_INCLUDED

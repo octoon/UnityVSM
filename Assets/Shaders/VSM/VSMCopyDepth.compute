@@ -40,12 +40,8 @@ void CopyDepthToPhysicalMemory(uint3 id : SV_DispatchThreadID)
     int2 cascadeOffset = _CascadeOffsets[_CurrentCascade];
     int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
 
-    // DEBUG: If offset is (0,0), use direct mapping without wrapping
-    // This matches AllocateAllPages debug mode behavior
-    if (cascadeOffset.x == 0 && cascadeOffset.y == 0)
-    {
-        wrappedCoords = pageCoords;  // Direct mapping, no wrap
-    }
+    // FIXED: Removed debug code that caused inconsistent coordinate mapping
+    // Always use wrapping for consistency with MarkVisiblePages
 
     if (wrappedCoords.x < 0)
         return;
@@ -73,6 +69,11 @@ void CopyDepthToPhysicalMemory(uint3 id : SV_DispatchThreadID)
     // Convert 2D to 1D index for StructuredBuffer
     uint bufferIndex = physicalTexelCoords.y * _PhysicalMemoryWidth + physicalTexelCoords.x;
 
-    // Write to physical memory using InterlockedMin (atomic min for overlapping geometry)
-    InterlockedMin(_PhysicalMemoryBuffer[bufferIndex], asuint(depth));
+    // OPTIMIZED: Use direct write for traditional rendering (depth already resolved)
+    // Only use atomic operations when necessary (e.g., meshlet rendering with overlapping writes)
+    #ifdef MESHLET_RENDERING
+        InterlockedMin(_PhysicalMemoryBuffer[bufferIndex], asuint(depth));
+    #else
+        _PhysicalMemoryBuffer[bufferIndex] = asuint(depth);  // Direct write is faster
+    #endif
 }

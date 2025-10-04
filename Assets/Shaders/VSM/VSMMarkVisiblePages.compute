@@ -34,18 +34,31 @@ float _CascadeBias;  // Bias for cascade selection
 
 float3 ReconstructWorldPosition(float2 uv, float depth)
 {
-    // CRITICAL: Handle depth range differences
-    #if UNITY_REVERSED_Z
-        // DX12/Vulkan: depth is [1 (near), 0 (far)]
-        // Already correct for clip space
+    // FIXED: Improved platform compatibility for depth reconstruction
+
+    // Handle depth range differences across platforms
+    #if defined(UNITY_REVERSED_Z)
+        // DX12/Vulkan/Metal: depth is [1 (near), 0 (far)]
+        // Convert to clip space Z range [-1, 1] for OpenGL or [0, 1] for DX
+        #if SHADER_API_OPENGL || SHADER_API_GLES || SHADER_API_GLES3
+            depth = (1.0 - depth) * 2.0 - 1.0;  // [1,0] -> [0,1] -> [-1,1]
+        #else
+            // DX/Vulkan/Metal use [0,1] clip space
+            depth = 1.0 - depth;  // [1,0] -> [0,1]
+        #endif
     #else
         // OpenGL: depth is [0 (near), 1 (far)]
-        // Need to remap to [-1, 1] for clip space
-        depth = depth * 2.0 - 1.0;
+        depth = depth * 2.0 - 1.0;  // [0,1] -> [-1,1]
     #endif
 
-    float4 clipPos = float4(uv * 2.0 - 1.0, depth, 1.0);
-    clipPos.y = -clipPos.y;  // Flip Y for Unity
+    // Build clip space position
+    float4 clipPos;
+    clipPos.x = uv.x * 2.0 - 1.0;
+    clipPos.y = (1.0 - uv.y) * 2.0 - 1.0;  // FIXED: Direct UV flip for Unity
+    clipPos.z = depth;
+    clipPos.w = 1.0;
+
+    // Transform to world space
     float4 worldPos = mul(_CameraInverseViewProjection, clipPos);
     return worldPos.xyz / worldPos.w;
 }

@@ -7,7 +7,9 @@
       "Bash(cat:*)",
       "Bash(\"/c/Program Files/Unity/Hub/Editor/2022.3.22f1/Editor/Unity.exe\" -projectPath \"C:\\Users\\jstzw\\Downloads\\VSMUnityProject\" -executeMethod UnityEditor.EditorApplication.OpenScene -editorTestsResultFile -)",
       "Bash(find:*)",
-      "Read(//c/Users/jstzw/AppData/Roaming/UnityHub/logs/**)"
+      "Read(//c/Users/jstzw/AppData/Roaming/UnityHub/logs/**)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\n修复VSM关键数学错误和兼容性问题\n\n根据GPU Zen 3论文和Bug分析报告修复了以下问题：\n\n🔴 最高优先级修复 (P0):\n- 修复物理页坐标计算错误 (VSMSampling.hlsl)\n  错误公式: (physicalPageCoords + pageUV) * VSM_PAGE_SIZE\n  正确公式: physicalPageCoords * VSM_PAGE_SIZE + pageUV * VSM_PAGE_SIZE\n- 修复PCF滤波中相同的坐标计算错误\n- 移除CopyDepth中导致坐标映射不一致的DEBUG代码\n- 修复Filter margin默认值从0改为1，支持3x3 PCF滤波\n\n🟠 高优先级修复 (P1):\n- 改进深度重建跨平台兼容性，正确处理不同API的深度范围\n\n🟡 性能优化 (P2):\n- 优化atomic操作，传统渲染使用直接写入\n- 添加优化的采样函数，避免cascade重复计算\n\n这些修复解决了阴影完全错误的关键问题，现在VSM应该能正常工作。\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []
