@@ -60,7 +60,8 @@ Shader "VSM/MeshletRender"
 
             // VSM数据
             Texture2DArray<uint> _VirtualPageTable;
-            RWTexture2D<uint> _PhysicalMemory;  // Use uint for InterlockedMin
+            RWStructuredBuffer<uint> _PhysicalMemory;  // DX12: Use StructuredBuffer for InterlockedMin in fragment shader
+            uint _PhysicalMemoryWidth;  // For 2D to 1D index conversion
             StructuredBuffer<float4x4> _CascadeLightMatrices;
             StructuredBuffer<int2> _CascadeOffsets;
 
@@ -119,11 +120,14 @@ Shader "VSM/MeshletRender"
             }
 
             // 论文 Listing 12.3: Fragment shader
-            void frag(v2f i, out float depth : SV_Depth)
+            void frag(v2f i)
             {
-                // 计算虚拟纹理坐标
-                int2 virtualTexel = int2(i.pos.xy);
-                float2 virtualUV = virtualTexel / float(VSM_VIRTUAL_TEXTURE_RESOLUTION);
+                // Calculate NDC position (perspective divide)
+                float3 ndc = i.pos.xyz / i.pos.w;
+
+                // Convert NDC to UV [0,1]
+                float2 uv = ndc.xy * 0.5 + 0.5;
+                float2 virtualUV = uv;
 
                 // 计算页坐标
                 int3 pageCoords = int3(
@@ -146,16 +150,26 @@ Shader "VSM/MeshletRender"
 
                 // 计算物理内存坐标
                 int2 physicalPage = UnpackPhysicalPageCoords(pageEntry);
-                uint2 inPageOffset = uint2((uint)virtualTexel.x % (uint)VSM_PAGE_SIZE,
-                                           (uint)virtualTexel.y % (uint)VSM_PAGE_SIZE);
-                uint2 physicalTexel = uint2(physicalPage * VSM_PAGE_SIZE) + inPageOffset;
+
+                // 计算虚拟纹理坐标
+                int2 virtualTexelCoords = int2(virtualUV * VSM_VIRTUAL_TEXTURE_RESOLUTION);
+                int2 inPageTexelCoords = int2(virtualTexelCoords.x % VSM_PAGE_SIZE,
+                                               virtualTexelCoords.y % VSM_PAGE_SIZE);
+
+                int2 inMemoryOffset = physicalPage * VSM_PAGE_SIZE;
+                int2 memoryTexelCoords = inMemoryOffset + inPageTexelCoords;
+
+                // Convert 2D to 1D index for StructuredBuffer
+                uint memoryIndex = memoryTexelCoords.y * _PhysicalMemoryWidth + memoryTexelCoords.x;
+
+                // Handle platform depth differences
+                float fragmentDepth = ndc.z;
+                #if !UNITY_REVERSED_Z
+                    fragmentDepth = fragmentDepth * 0.5 + 0.5;
+                #endif
 
                 // 论文: "an atomic min operation is used to store the new depth"
-                float fragmentDepth = i.pos.z;
-                uint depthAsUint = asuint(fragmentDepth);
-                InterlockedMin(_PhysicalMemory[physicalTexel], depthAsUint);
-
-                depth = fragmentDepth;
+                InterlockedMin(_PhysicalMemory[memoryIndex], asuint(fragmentDepth));
             }
             ENDHLSL
         }

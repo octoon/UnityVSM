@@ -9,6 +9,11 @@
 #define VSM_PHYSICAL_MEMORY_WIDTH 8192
 #define VSM_PHYSICAL_MEMORY_HEIGHT 4096
 
+// Physical page grid dimensions (CRITICAL for coordinate mapping)
+#define VSM_PHYSICAL_PAGE_COUNT_X 64  // 8192 / 128 = 64 pages wide
+#define VSM_PHYSICAL_PAGE_COUNT_Y 32  // 4096 / 128 = 32 pages tall
+#define VSM_MAX_PHYSICAL_PAGES 2048   // 64 * 32 = 2048 pages
+
 // Page entry bit flags
 #define VSM_ALLOCATED_BIT 0x1u
 #define VSM_VISIBLE_BIT 0x2u
@@ -118,7 +123,10 @@ float GetScreenTexelWorldSize(float3 worldPos, float4x4 viewProj, float2 screenS
 float2 WorldToLightSpaceUV(float3 worldPos, float4x4 lightMatrix)
 {
     float4 lightSpacePos = mul(lightMatrix, float4(worldPos, 1.0));
-    float2 uv = lightSpacePos.xy * 0.5 + 0.5;
+    // CRITICAL: Must do perspective divide (even for ortho, w=1.0)
+    float3 ndc = lightSpacePos.xyz / lightSpacePos.w;
+    // NDC [-1,1] to UV [0,1]
+    float2 uv = ndc.xy * 0.5 + 0.5;
     return uv;
 }
 

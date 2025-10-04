@@ -16,7 +16,7 @@ Shader "VSM/DepthRender"
             ZWrite On
             ZTest LEqual
             Cull Back
-            ColorMask 0  // Don't write color, only depth
+            // Write depth to COLOR buffer (RFloat render target)
 
             HLSLPROGRAM
             #pragma vertex vert
@@ -35,19 +35,17 @@ Shader "VSM/DepthRender"
             struct v2f
             {
                 float4 pos : SV_POSITION;
-                uint cascadeIndex : TEXCOORD0;
+                float3 lightSpacePos : TEXCOORD0;  // Light space position (for UV calculation)
+                uint cascadeIndex : TEXCOORD1;
             };
 
-            // Virtual Page Table
+            // Virtual Page Table (read-only for validation)
             Texture2DArray<uint> _VirtualPageTable;
 
             // Cascade data
             StructuredBuffer<float4x4> _CascadeLightMatrices;
             StructuredBuffer<int2> _CascadeOffsets;
             uint _CurrentCascade;
-
-            // Physical memory - use uint for InterlockedMin support
-            RWTexture2D<uint> _PhysicalMemory;
 
             v2f vert(appdata v)
             {
@@ -56,25 +54,26 @@ Shader "VSM/DepthRender"
                 // Transform to light space using cascade matrix
                 float4 worldPos = mul(unity_ObjectToWorld, v.vertex);
                 float4x4 lightMatrix = _CascadeLightMatrices[_CurrentCascade];
-                o.pos = mul(lightMatrix, worldPos);
+                o.lightSpacePos = mul(lightMatrix, worldPos).xyz;
+                o.pos = mul(lightMatrix, worldPos);  // Output light space position as clip position
                 o.cascadeIndex = _CurrentCascade;
 
                 return o;
             }
 
-            // Paper Listing 12.3: Fragment shader that writes depth using gl_FragCoord.z
-            // In Unity, we use SV_Position for fragment coordinates and depth from position
-            void frag(v2f i, out float depth : SV_Depth)
+            // Simplified fragment shader: output depth to COLOR target (not SV_Depth)
+            // We render to RFloat color buffer, then compute shader copies to physical memory
+            float frag(v2f i) : SV_Target
             {
-                // Paper Listing 12.3: Use gl_FragCoord.xy directly as virtual texel coordinates
-                int2 virtualTexelCoords = int2(i.pos.xy);
+                // Calculate NDC position from light space
+                float3 ndc = i.lightSpacePos / i.pos.w;
 
-                // Calculate virtual UV from texel coordinates
-                float2 virtualUV = virtualTexelCoords / float(VSM_VIRTUAL_TEXTURE_RESOLUTION);
+                // Convert NDC [-1,1] to UV [0,1]
+                float2 uv = ndc.xy * 0.5 + 0.5;
 
                 // Calculate page coordinates
                 int3 pageCoords = int3(
-                    floor(virtualUV * VSM_PAGE_TABLE_RESOLUTION),
+                    floor(uv * VSM_PAGE_TABLE_RESOLUTION),
                     i.cascadeIndex
                 );
 
@@ -88,37 +87,18 @@ Shader "VSM/DepthRender"
                 // Look up page entry
                 uint pageEntry = _VirtualPageTable[wrappedCoords];
 
-                // TEMPORARILY DISABLE dirty check for debugging
-                // Only write to allocated pages (ignore dirty flag for now)
+                // Only render to allocated pages
                 if (!GetIsAllocated(pageEntry))
                     discard;
 
-                // Original check (disabled for debugging):
-                // if (!GetIsAllocated(pageEntry) || !GetIsDirty(pageEntry))
-                //     discard;
+                // Handle platform depth differences
+                float fragmentDepth = ndc.z;
+                #if !UNITY_REVERSED_Z
+                    fragmentDepth = fragmentDepth * 0.5 + 0.5;
+                #endif
 
-                // Get physical page coordinates
-                int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
-
-                // Calculate texel offset within the page (modulo operation - use uint for performance)
-                uint2 inPageTexelCoords = uint2((uint)virtualTexelCoords.x % (uint)VSM_PAGE_SIZE,
-                                                 (uint)virtualTexelCoords.y % (uint)VSM_PAGE_SIZE);
-
-                // Calculate final physical memory texel coordinates
-                int2 inMemoryOffset = physicalPageCoords * VSM_PAGE_SIZE;
-                uint2 memoryTexelCoords = uint2(inMemoryOffset) + inPageTexelCoords;
-
-                // Paper Listing 12.3: Use gl_FragCoord.z (hardware-interpolated depth)
-                // In Unity, i.pos.z contains the clip-space depth after rasterization
-                float fragmentDepth = i.pos.z;
-
-                // Write depth using atomic min (paper Listing 12.3)
-                // Convert depth to uint for atomic operations
-                uint depthAsUint = asuint(fragmentDepth);
-                InterlockedMin(_PhysicalMemory[memoryTexelCoords], depthAsUint);
-
-                // Output depth to depth buffer
-                depth = fragmentDepth;
+                // Output depth to COLOR buffer (will be copied to physical memory by compute shader)
+                return fragmentDepth;
             }
             ENDHLSL
         }

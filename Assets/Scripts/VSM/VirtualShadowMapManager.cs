@@ -14,7 +14,7 @@ namespace VSM
         [SerializeField] private Light directionalLight;
         [SerializeField] private float firstCascadeSize = 2.0f;  // Side length of first cascade frustum (not radius)
         [SerializeField] private LayerMask shadowCasters = -1;
-        [SerializeField] [Range(0, 3)] private int filterMargin = 0;  // Pages margin for PCF filtering (TEMP: set to 0 to reduce allocation requests)
+        [SerializeField] [Range(0, 8)] private int filterMargin = 0;  // DEBUG: Set to 0 to test if filter margin causes the artifact
 
         [Header("Cascade Selection Heuristic")]
         [SerializeField] private bool usePixelPerfectHeuristic = false;  // Use first (pixel-perfect) or second (distance) heuristic
@@ -28,18 +28,26 @@ namespace VSM
         [SerializeField] private ComputeShader clearPagesShader;
         [SerializeField] private ComputeShader clearMemoryShader;  // Clear physical memory to 1.0
         [SerializeField] private ComputeShader buildHPBShader;
+        [SerializeField] private ComputeShader copyDepthShader;  // NEW: Copy depth from RT to physical memory
+        [SerializeField] private ComputeShader copyBufferToTextureShader;  // NEW: Copy buffer to texture for sampling
 
         [Header("Rendering")]
         [SerializeField] private Shader vsmDepthShader;
         [SerializeField] private Material vsmDepthMaterial;
 
         [Header("Meshlet Rendering (Advanced)")]
-        [SerializeField] private bool useMeshletRendering = false;
+        [SerializeField] private bool useMeshletRendering = true;  // Enable meshlet rendering by default
         [SerializeField] private ComputeShader meshletTaskShader;
         [SerializeField] private Shader meshletRenderShader;
 
         [Header("Debug")]
         [SerializeField] private bool debugVisualization = false;
+        [SerializeField] private ComputeShader debugCountShader;  // Debug shader to count allocated pages
+        [SerializeField] private ComputeShader debugTempRTShader;  // Debug shader to check temp RT contents
+        [SerializeField] private ComputeShader debugPhysicalMemoryShader;  // Debug shader to check physical memory
+        [SerializeField] private bool disableSlidingWindow = false;  // DEBUG: Disable sliding window to test offset calculation
+        [SerializeField] private bool allocateAllPages = false;  // DEBUG: Allocate all pages to test rendering
+        [SerializeField] private ComputeShader allocateAllPagesShader;  // DEBUG shader
 
         // Core components
         private Camera mainCamera;
@@ -70,7 +78,7 @@ namespace VSM
         private RenderTexture tempDepthTexture;
 
         // Meshlet renderer
-        // private VSMMeshletRenderer meshletRenderer;  // Disabled - optional feature
+        private VSMMeshletRenderer meshletRenderer;
 
         private bool isInitialized = false;
 
@@ -85,7 +93,7 @@ namespace VSM
             // Create core components
             pageTable = new VSMPageTable();
             physicalPageTable = new VSMPhysicalPageTable();
-            physicalMemory = new VSMPhysicalMemory(clearMemoryShader);
+            physicalMemory = new VSMPhysicalMemory(clearMemoryShader, copyBufferToTextureShader);
             hpb = new VSMHierarchicalPageBuffer(buildHPBShader);
 
             // Initialize cascade data
@@ -116,7 +124,7 @@ namespace VSM
             vsmCommandBuffer.name = "Virtual Shadow Maps";
 
             // Initialize meshlet renderer if enabled
-            /*if (useMeshletRendering)
+            if (useMeshletRendering)
             {
                 GameObject meshletObj = new GameObject("VSM_MeshletRenderer");
                 meshletObj.transform.SetParent(transform);
@@ -124,9 +132,12 @@ namespace VSM
                 meshletRenderer.Initialize(hpb);
 
                 Debug.Log("Meshlet rendering enabled (论文实现：Task+Mesh Shader剔除)");
-            }*/
+            }
 
             UpdateCascadeMatrices();
+
+            // Bind VSM data to shaders immediately after initialization
+            BindVSMDataToShaders();
 
             isInitialized = true;
             Debug.Log("Virtual Shadow Maps initialized successfully");
@@ -185,12 +196,34 @@ namespace VSM
                 // Paper Listing 12.1: Calculate cascade offset for sliding window (wraparound addressing)
                 // "we store a per-cascade offset of the respective light matrix position from the origin"
                 // This offset is used to translate virtual page coordinates into wrapped coordinates
-                Vector3 cascadeOrigin = lightPos - new Vector3(cascadeSize / 2, cascadeSize / 2, 0);
 
-                // Convert world-space origin to page coordinates
-                int offsetX = Mathf.FloorToInt(cascadeOrigin.x / pageWorldSize);
-                int offsetY = Mathf.FloorToInt(cascadeOrigin.y / pageWorldSize);
-                cascadeOffsets[i] = new Vector2Int(offsetX, offsetY);
+                // CRITICAL FIX: The cascade origin is the bottom-left corner of the orthographic frustum
+                // in light space (X,Y plane). We project lightPos onto the X-Y plane perpendicular to lightDir.
+                // The offset calculation should be in light-space coordinates, not world-space!
+
+                // Calculate frustum corner in world space (bottom-left of ortho projection)
+                Vector3 frustumBottomLeft = lightPos - right * (cascadeSize / 2) - up * (cascadeSize / 2);
+
+                // Project onto right/up plane to get 2D cascade origin
+                float originX = Vector3.Dot(frustumBottomLeft, right);
+                float originY = Vector3.Dot(frustumBottomLeft, up);
+
+                // Convert to page coordinates (these are the offsets for sliding window)
+                int offsetX = Mathf.FloorToInt(originX / pageWorldSize);
+                int offsetY = Mathf.FloorToInt(originY / pageWorldSize);
+
+                // DEBUG: Option to disable sliding window
+                if (disableSlidingWindow)
+                {
+                    cascadeOffsets[i] = Vector2Int.zero;
+                }
+                else
+                {
+                    cascadeOffsets[i] = new Vector2Int(offsetX, offsetY);
+                }
+
+                // Store frustum origin for next frame comparison (in 2D light space)
+                Vector3 cascadeOrigin = new Vector3(originX, originY, 0);
 
                 // Calculate shift from previous frame (for invalidating sliding window pages)
                 Vector3 previousOrigin = previousCascadeOrigins[i];
@@ -208,7 +241,7 @@ namespace VSM
                     cascadeShifts[i] = Vector2Int.zero;
                 }
 
-                // Store for next frame
+                // Store for next frame (in 2D light space)
                 previousCascadeOrigins[i] = cascadeOrigin;
 
                 // Create orthographic projection for cascade
@@ -249,12 +282,54 @@ namespace VSM
             // Phase 2: Drawing
             DrawingPhase();
 
+            // Phase 3: Copy buffer to texture for sampling
+            physicalMemory.CopyBufferToTexture();
+
+            // DEBUG: Immediately check buffer AFTER CopyBufferToTexture
+            if (debugPhysicalMemoryShader != null)
+            {
+                Debug.Log($"[VSM DEBUG IMMEDIATE] Right after CopyBufferToTexture. Buffer ID: {physicalMemory.Buffer.GetNativeBufferPtr().ToInt64():X}");
+
+                ComputeBuffer debugBuffer = new ComputeBuffer(10, sizeof(float));
+                int kernel = debugPhysicalMemoryShader.FindKernel("DebugPhysicalMemory");
+                debugPhysicalMemoryShader.SetBuffer(kernel, "_PhysicalMemoryBuffer", physicalMemory.Buffer);
+                debugPhysicalMemoryShader.SetBuffer(kernel, "_DebugOutput", debugBuffer);
+                debugPhysicalMemoryShader.SetInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
+                debugPhysicalMemoryShader.Dispatch(kernel, 1, 1, 1);
+
+                float[] samples = new float[10];
+                debugBuffer.GetData(samples);
+                Debug.Log($"[VSM IMMEDIATE Debug] Samples: [{samples[0]:F4}, {samples[1]:F4}, {samples[2]:F4}]");
+                debugBuffer.Release();
+            }
+
             // Bind VSM data for sampling in shaders
             BindVSMDataToShaders();
         }
 
         void BookkeepingPhase()
         {
+            // DEBUG: Skip normal bookkeeping and allocate all pages
+            if (allocateAllPages && allocateAllPagesShader != null)
+            {
+                int kernel = allocateAllPagesShader.FindKernel("AllocateAllPages");
+                allocateAllPagesShader.SetTexture(kernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
+                allocateAllPagesShader.SetBuffer(kernel, "_PhysicalPageTable", physicalPageTable.Buffer);
+                allocateAllPagesShader.Dispatch(kernel,
+                    Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
+                    Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
+                    VSMConstants.CASCADE_COUNT);
+
+                Debug.Log("[VSM DEBUG] Allocated ALL pages for testing");
+
+                // CRITICAL: Also clear all physical memory to 1.0 (far plane)
+                // Since we skipped normal allocation, ClearDirtyPages won't run
+                physicalMemory.ClearMemory();
+
+                return;
+            }
+
+            // Normal bookkeeping follows...
             // Step 0: Clear visible flags (CRITICAL - must be done first every frame)
             // Paper: "At the start of each frame, we must clear the visible flag from all pages"
             if (clearVisibleFlagsShader != null)
@@ -298,6 +373,8 @@ namespace VSM
                 markVisiblePagesShader.SetBuffer(kernel, "_CascadeLightMatrices", cascadeLightMatricesBuffer);
                 markVisiblePagesShader.SetBuffer(kernel, "_CascadeOffsets", cascadeOffsetsBuffer);
 
+                // CRITICAL: Don't use GL.GetGPUProjectionMatrix for camera
+                // The depth texture already handles platform differences
                 Matrix4x4 viewProj = mainCamera.projectionMatrix * mainCamera.worldToCameraMatrix;
                 markVisiblePagesShader.SetMatrix("_CameraInverseViewProjection", viewProj.inverse);
                 markVisiblePagesShader.SetMatrix("_CameraViewProjection", viewProj);
@@ -306,6 +383,9 @@ namespace VSM
                 markVisiblePagesShader.SetInt("_ScreenWidth", mainCamera.pixelWidth);
                 markVisiblePagesShader.SetInt("_ScreenHeight", mainCamera.pixelHeight);
                 markVisiblePagesShader.SetInt("_FilterMargin", filterMargin);
+
+                // DEBUG: Log screen resolution
+                Debug.Log($"[VSM MarkVisible] Screen: {mainCamera.pixelWidth}×{mainCamera.pixelHeight} = {mainCamera.pixelWidth * mainCamera.pixelHeight} pixels");
 
                 // Cascade selection heuristic parameters
                 markVisiblePagesShader.SetInt("_UsePixelPerfectHeuristic", usePixelPerfectHeuristic ? 1 : 0);
@@ -382,6 +462,26 @@ namespace VSM
 
                     // DEBUG: Log allocated pages
                     Debug.Log($"[VSM AllocationPhase] Allocated {allocationRequestCount} pages (free: {pageCounts[0]}, used: {pageCounts[1]})");
+
+                    // DEBUG: Count allocated pages in VPT
+                    if (debugCountShader != null)
+                    {
+                        ComputeBuffer countBuffer = new ComputeBuffer(3, sizeof(uint));
+                        countBuffer.SetData(new uint[] { 0, 0, 0 });
+
+                        int countKernel = debugCountShader.FindKernel("CountAllocatedPages");
+                        debugCountShader.SetTexture(countKernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
+                        debugCountShader.SetBuffer(countKernel, "_CountBuffer", countBuffer);
+                        debugCountShader.Dispatch(countKernel,
+                            Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
+                            Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
+                            VSMConstants.CASCADE_COUNT);
+
+                        uint[] debugCounts = new uint[3];
+                        countBuffer.GetData(debugCounts);
+                        Debug.Log($"[VSM DEBUG] VPT state: Allocated={debugCounts[0]}, Visible={debugCounts[1]}, Dirty={debugCounts[2]}");
+                        countBuffer.Release();
+                    }
                 }
                 else
                 {
@@ -400,7 +500,8 @@ namespace VSM
                 if (allocationRequestCount > 0)
                 {
                     int clearKernel = clearPagesShader.FindKernel("ClearDirtyPages");
-                    clearPagesShader.SetTexture(clearKernel, "_PhysicalMemory", physicalMemory.Texture);
+                    clearPagesShader.SetBuffer(clearKernel, "_PhysicalMemoryBuffer", physicalMemory.Buffer);
+                    clearPagesShader.SetInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
                     clearPagesShader.SetTexture(clearKernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
                     clearPagesShader.SetBuffer(clearKernel, "_AllocationRequests", pageTable.AllocationRequests);
                     clearPagesShader.SetBuffer(clearKernel, "_CascadeOffsets", cascadeOffsetsBuffer);
@@ -428,12 +529,14 @@ namespace VSM
             if (vsmCommandBuffer == null)
                 return;
 
+            Debug.Log($"[VSM DrawingPhase] Using {(useMeshletRendering && meshletRenderer != null ? "MESHLET" : "TRADITIONAL")} rendering");
+
             // 选择渲染路径：Meshlet（论文方法）或传统方法
-            /*if (useMeshletRendering && meshletRenderer != null)
+            if (useMeshletRendering && meshletRenderer != null)
             {
                 DrawingPhase_Meshlet();
             }
-            else*/
+            else
             {
                 DrawingPhase_Traditional();
             }
@@ -447,20 +550,17 @@ namespace VSM
 
             vsmCommandBuffer.Clear();
 
-            // IMPORTANT: Fragment shader需要一个渲染目标才会执行
-            // 虽然我们在shader中使用InterlockedMin直接写入_PhysicalMemory，
-            // 但仍需要设置一个渲染目标来触发fragment shader执行
-
-            // 创建临时深度纹理作为渲染目标
+            // Create temporary render texture for each cascade (virtual resolution)
+            // We render to virtual resolution, then copy to sparse physical memory
+            int virtualRes = VSMConstants.VIRTUAL_TEXTURE_RESOLUTION;
             int tempDepthID = Shader.PropertyToID("_VSMTempDepth");
+
             vsmCommandBuffer.GetTemporaryRT(tempDepthID,
-                VSMConstants.PAGE_SIZE, VSMConstants.PAGE_SIZE,
-                24, FilterMode.Point, RenderTextureFormat.Depth);
-            vsmCommandBuffer.SetRenderTarget(tempDepthID);
+                virtualRes, virtualRes,
+                24, FilterMode.Point, RenderTextureFormat.RFloat);
 
             // Set global shader properties for VSM rendering
             vsmCommandBuffer.SetGlobalTexture("_VirtualPageTable", pageTable.VirtualPageTableTexture);
-            vsmCommandBuffer.SetGlobalTexture("_PhysicalMemory", physicalMemory.Texture);
             vsmCommandBuffer.SetGlobalBuffer("_CascadeLightMatrices", cascadeLightMatricesBuffer);
             vsmCommandBuffer.SetGlobalBuffer("_CascadeOffsets", cascadeOffsetsBuffer);
 
@@ -475,50 +575,29 @@ namespace VSM
             {
                 int drawnThisCascade = 0; // DEBUG counter
 
-                // Clear depth buffer for this cascade
-                vsmCommandBuffer.ClearRenderTarget(true, false, Color.clear);
+                // Set render target and clear
+                vsmCommandBuffer.SetRenderTarget(tempDepthID);
+                vsmCommandBuffer.ClearRenderTarget(true, true, Color.clear);
 
                 // Set current cascade index
                 vsmCommandBuffer.SetGlobalInt("_CurrentCascade", cascadeIndex);
-
-                // Paper: "Due to the VSM having many cascades, it is critical to have effective and granular scene culling"
-                // In a full implementation, you would:
-                // 1. Use HPB for per-meshlet culling (via compute shader or task shader)
-                // 2. Only render geometry that intersects dirty pages (HPB culling - see VSMCullAndDraw.compute)
-                // 3. Use indirect drawing for maximum efficiency
 
                 foreach (Renderer renderer in renderers)
                 {
                     // Check if renderer is in shadow caster layer
                     if (((1 << renderer.gameObject.layer) & shadowCasters) == 0)
                     {
-                        // DEBUG: Log filtered objects
-                        Debug.Log($"[VSM] Skipping {renderer.name} - not in shadowCasters layer");
                         continue;
                     }
-
-                    // Frustum culling against cascade
-                    // TEMPORARILY DISABLED for debugging
-                    /*Bounds bounds = renderer.bounds;
-                    if (!IsInCascadeFrustum(bounds, cascadeIndex))
-                    {
-                        // DEBUG: Log culled objects
-                        //Debug.Log($"[VSM] Culled {renderer.name} - outside cascade {cascadeIndex} frustum");
-                        continue;
-                    }*/
-
-                    // HPB culling would go here - for now we render all objects in frustum
-                    // See VSMCullAndDraw.compute for HPB culling implementation
 
                     // Get mesh
                     MeshFilter meshFilter = renderer.GetComponent<MeshFilter>();
                     if (meshFilter == null || meshFilter.sharedMesh == null)
                     {
-                        Debug.Log($"[VSM] Skipping {renderer.name} - no MeshFilter or shared mesh");
                         continue;
                     }
 
-                    // Draw mesh to VSM using command buffer
+                    // Draw mesh to temp RT using command buffer
                     Matrix4x4 worldMatrix = renderer.transform.localToWorldMatrix;
                     vsmCommandBuffer.DrawMesh(
                         meshFilter.sharedMesh,
@@ -533,6 +612,28 @@ namespace VSM
 
                 // DEBUG: Log draw count per cascade
                 Debug.Log($"[VSM DrawingPhase] Cascade {cascadeIndex}: Drew {drawnThisCascade} objects");
+
+                // Copy from temp RT to physical memory using compute shader
+                if (copyDepthShader != null)
+                {
+                    int kernel = copyDepthShader.FindKernel("CopyDepthToPhysicalMemory");
+                    vsmCommandBuffer.SetComputeTextureParam(copyDepthShader, kernel, "_SourceDepth", tempDepthID);
+                    vsmCommandBuffer.SetComputeBufferParam(copyDepthShader, kernel, "_PhysicalMemoryBuffer", physicalMemory.Buffer);
+                    vsmCommandBuffer.SetComputeIntParam(copyDepthShader, "_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
+                    vsmCommandBuffer.SetComputeTextureParam(copyDepthShader, kernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
+                    vsmCommandBuffer.SetComputeBufferParam(copyDepthShader, kernel, "_CascadeOffsets", cascadeOffsetsBuffer);
+                    vsmCommandBuffer.SetComputeIntParam(copyDepthShader, "_CurrentCascade", cascadeIndex);
+                    vsmCommandBuffer.SetComputeIntParam(copyDepthShader, "_VirtualResolution", virtualRes);
+
+                    int threadGroups = Mathf.CeilToInt(virtualRes / 8.0f);
+                    vsmCommandBuffer.DispatchCompute(copyDepthShader, kernel, threadGroups, threadGroups, 1);
+
+                    Debug.Log($"[VSM CopyDepth] Cascade {cascadeIndex}: Dispatched copy with {threadGroups}x{threadGroups} thread groups");
+                }
+                else
+                {
+                    Debug.LogError("[VSM CopyDepth] CopyDepthShader is NULL!");
+                }
             }
 
             // Release temporary RT
@@ -540,14 +641,36 @@ namespace VSM
 
             // Execute the command buffer
             Graphics.ExecuteCommandBuffer(vsmCommandBuffer);
+
+            // DEBUG: Check physical memory after rendering
+            if (debugPhysicalMemoryShader != null)
+            {
+                Debug.Log($"[VSM DEBUG] About to read from buffer. Buffer InstanceID: {physicalMemory.Buffer.GetNativeBufferPtr().ToInt64():X}");
+
+                ComputeBuffer debugBuffer = new ComputeBuffer(10, sizeof(float));
+                int kernel = debugPhysicalMemoryShader.FindKernel("DebugPhysicalMemory");
+                debugPhysicalMemoryShader.SetBuffer(kernel, "_PhysicalMemoryBuffer", physicalMemory.Buffer);
+                debugPhysicalMemoryShader.SetBuffer(kernel, "_DebugOutput", debugBuffer);
+                debugPhysicalMemoryShader.SetInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
+                debugPhysicalMemoryShader.Dispatch(kernel, 1, 1, 1);
+
+                float[] samples = new float[10];
+                debugBuffer.GetData(samples);
+                Debug.Log($"[VSM PhysicalMemory Debug] First 10 page corners: [{samples[0]:F4}, {samples[1]:F4}, {samples[2]:F4}, {samples[3]:F4}, {samples[4]:F4}, {samples[5]:F4}, {samples[6]:F4}, {samples[7]:F4}, {samples[8]:F4}, {samples[9]:F4}]");
+                debugBuffer.Release();
+            }
         }
 
-        /*void DrawingPhase_Meshlet()
+        void DrawingPhase_Meshlet()
         {
             // 论文实现：Meshlet + Task/Mesh Shader
             // "To achieve granular culling, our drawing was implemented with meshlets combined with mesh shaders"
 
             vsmCommandBuffer.Clear();
+
+            // Set global buffer for physical memory (RWStructuredBuffer)
+            vsmCommandBuffer.SetGlobalBuffer("_PhysicalMemory", physicalMemory.Buffer);
+            vsmCommandBuffer.SetGlobalInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
 
             // Get all shadow casters
             Renderer[] renderers = FindObjectsOfType<Renderer>();
@@ -585,14 +708,14 @@ namespace VSM
                         cascadeLightMatricesBuffer,
                         cascadeOffsetsBuffer,
                         pageTable.VirtualPageTableTexture,
-                        physicalMemory.Texture
+                        physicalMemory.Buffer  // Pass buffer instead of texture
                     );
                 }
             }
 
             // Execute command buffer
             Graphics.ExecuteCommandBuffer(vsmCommandBuffer);
-        }*/
+        }
 
         bool IsInCascadeFrustum(Bounds bounds, int cascadeIndex)
         {
@@ -719,11 +842,11 @@ namespace VSM
             }
 
             // Cleanup meshlet renderer
-            /*if (meshletRenderer != null)
+            if (meshletRenderer != null)
             {
                 meshletRenderer.Release();
                 Destroy(meshletRenderer.gameObject);
-            }*/
+            }
         }
 
         void OnGUI()

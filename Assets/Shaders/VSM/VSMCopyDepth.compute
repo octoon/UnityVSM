@@ -1,0 +1,78 @@
+#pragma kernel CopyDepthToPhysicalMemory
+
+#include "../Include/VSMCommon.hlsl"
+
+// Input: rendered depth texture (virtual resolution for current cascade)
+Texture2D<float> _SourceDepth;
+
+// Output: physical memory buffer (for atomic operations)
+RWStructuredBuffer<uint> _PhysicalMemoryBuffer;
+uint _PhysicalMemoryWidth;  // For 2D to 1D index conversion
+
+// Page table to lookup physical coordinates
+Texture2DArray<uint> _VirtualPageTable;
+
+// Cascade data
+StructuredBuffer<int2> _CascadeOffsets;
+uint _CurrentCascade;
+uint _VirtualResolution;  // Virtual texture resolution for this cascade (e.g., 4096)
+
+// Copy depth from virtual space render target to physical memory pages
+[numthreads(8, 8, 1)]
+void CopyDepthToPhysicalMemory(uint3 id : SV_DispatchThreadID)
+{
+    // id.xy are virtual texel coordinates in range [0, _VirtualResolution)
+    if (any(id.xy >= _VirtualResolution))
+        return;
+
+    int2 virtualTexelCoords = id.xy;
+
+    // Calculate virtual UV
+    float2 virtualUV = virtualTexelCoords / float(_VirtualResolution);
+
+    // Calculate page coordinates
+    int3 pageCoords = int3(
+        floor(virtualUV * VSM_PAGE_TABLE_RESOLUTION),
+        _CurrentCascade
+    );
+
+    // Convert to wrapped coordinates (use offset for sliding window)
+    int2 cascadeOffset = _CascadeOffsets[_CurrentCascade];
+    int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+
+    // DEBUG: If offset is (0,0), use direct mapping without wrapping
+    // This matches AllocateAllPages debug mode behavior
+    if (cascadeOffset.x == 0 && cascadeOffset.y == 0)
+    {
+        wrappedCoords = pageCoords;  // Direct mapping, no wrap
+    }
+
+    if (wrappedCoords.x < 0)
+        return;
+
+    // Look up page entry
+    uint pageEntry = _VirtualPageTable[wrappedCoords];
+
+    // Only copy if page is allocated
+    if (!GetIsAllocated(pageEntry))
+        return;
+
+    // Get physical page coordinates
+    int2 physicalPageCoords = UnpackPhysicalPageCoords(pageEntry);
+
+    // Calculate texel within page
+    float2 pageUV = frac(virtualUV * VSM_PAGE_TABLE_RESOLUTION);
+    int2 texelCoordsInPage = int2(pageUV * VSM_PAGE_SIZE);
+
+    // Calculate final physical memory coordinates
+    int2 physicalTexelCoords = physicalPageCoords * VSM_PAGE_SIZE + texelCoordsInPage;
+
+    // Read depth from source render target
+    float depth = _SourceDepth[virtualTexelCoords];
+
+    // Convert 2D to 1D index for StructuredBuffer
+    uint bufferIndex = physicalTexelCoords.y * _PhysicalMemoryWidth + physicalTexelCoords.x;
+
+    // Write to physical memory using InterlockedMin (atomic min for overlapping geometry)
+    InterlockedMin(_PhysicalMemoryBuffer[bufferIndex], asuint(depth));
+}

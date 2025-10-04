@@ -1,0 +1,41 @@
+#pragma kernel DebugLogPageCoords
+
+#include "../Include/VSMCommon.hlsl"
+
+float3 _TestWorldPos;
+float3 _CameraPosition;
+float _FirstCascadeSize;
+StructuredBuffer<float4x4> _CascadeLightMatrices;
+StructuredBuffer<int2> _CascadeOffsets;
+
+// Output: [cascade, pageX, pageY, wrappedX, wrappedY]
+RWStructuredBuffer<int> _DebugOutput;
+
+[numthreads(1, 1, 1)]
+void DebugLogPageCoords(uint3 id : SV_DispatchThreadID)
+{
+    float3 worldPos = _TestWorldPos;
+
+    // Calculate cascade
+    int cascade = CalculateCascadeLevel(worldPos, _CameraPosition, _FirstCascadeSize);
+
+    // Transform to light space
+    float4x4 lightMatrix = _CascadeLightMatrices[cascade];
+    float2 uv = WorldToLightSpaceUV(worldPos, lightMatrix);
+
+    // Calculate page coordinates
+    int2 pageCoords = int2(floor(uv * VSM_PAGE_TABLE_RESOLUTION));
+
+    // Wrapped coordinates
+    int2 offset = _CascadeOffsets[cascade];
+    int3 wrapped = VirtualPageCoordsToWrappedCoords(int3(pageCoords, cascade), offset);
+
+    // Output
+    _DebugOutput[0] = cascade;
+    _DebugOutput[1] = pageCoords.x;
+    _DebugOutput[2] = pageCoords.y;
+    _DebugOutput[3] = wrapped.x;
+    _DebugOutput[4] = wrapped.y;
+    _DebugOutput[5] = (int)(uv.x * 1000.0);  // UV * 1000 for precision
+    _DebugOutput[6] = (int)(uv.y * 1000.0);
+}

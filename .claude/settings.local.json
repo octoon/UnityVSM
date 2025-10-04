@@ -6,7 +6,8 @@
       "Bash(\"/c/Program Files/Unity/Hub/Editor/2022.3.22f1/Editor/Unity.exe\" -projectPath \"C:\\Users\\jstzw\\Downloads\\VSMUnityProject\" -quit -batchmode)",
       "Bash(cat:*)",
       "Bash(\"/c/Program Files/Unity/Hub/Editor/2022.3.22f1/Editor/Unity.exe\" -projectPath \"C:\\Users\\jstzw\\Downloads\\VSMUnityProject\" -executeMethod UnityEditor.EditorApplication.OpenScene -editorTestsResultFile -)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Read(//c/Users/jstzw/AppData/Roaming/UnityHub/logs/**)"
     ],
     "deny": [],
     "ask": []

@@ -34,6 +34,16 @@ float _CascadeBias;  // Bias for cascade selection
 
 float3 ReconstructWorldPosition(float2 uv, float depth)
 {
+    // CRITICAL: Handle depth range differences
+    #if UNITY_REVERSED_Z
+        // DX12/Vulkan: depth is [1 (near), 0 (far)]
+        // Already correct for clip space
+    #else
+        // OpenGL: depth is [0 (near), 1 (far)]
+        // Need to remap to [-1, 1] for clip space
+        depth = depth * 2.0 - 1.0;
+    #endif
+
     float4 clipPos = float4(uv * 2.0 - 1.0, depth, 1.0);
     clipPos.y = -clipPos.y;  // Flip Y for Unity
     float4 worldPos = mul(_CameraInverseViewProjection, clipPos);
@@ -99,31 +109,40 @@ void MarkVisiblePages(uint3 id : SV_DispatchThreadID)
 
             // Read page entry
             uint pageEntry = _VirtualPageTable[wrappedCoords];
-            uint oldEntry = pageEntry;
 
             // Paper: Three cases based on page state
+            // CRITICAL: Use VISIBLE bit (not ALLOCATED) to prevent duplicate allocation requests!
+            // If page is visible (even if not allocated), it means another thread already requested it
             if (!GetIsAllocated(pageEntry))
             {
-                // Case 1: Page not allocated - request allocation
-                // Use InterlockedCompareExchange to ensure only ONE thread requests allocation
-                InterlockedCompareExchange(_VirtualPageTable[wrappedCoords],
-                    oldEntry,
-                    oldEntry | VSM_VISIBLE_BIT,
-                    pageEntry);
-
-                // Only the thread that successfully set VISIBLE bit appends the request
-                if (pageEntry == oldEntry)
+                if (!GetIsVisible(pageEntry))
                 {
-                    AllocationRequest request;
-                    request.pageCoords = pageCoords;
-                    request.padding = 0;
-                    _AllocationRequests.Append(request);
+                    // Case 1: Page not allocated AND not visible - request allocation
+                    // Set VISIBLE and DIRTY bits atomically to mark "allocation requested"
+                    // Only AllocatePages will set ALLOCATED bit after assigning physical page
+                    uint previousValue;
+                    InterlockedCompareExchange(_VirtualPageTable[wrappedCoords],
+                        pageEntry,  // Compare with read value (should be 0 or just dirty)
+                        pageEntry | VSM_VISIBLE_BIT | VSM_DIRTY_BIT,  // Set VISIBLE|DIRTY
+                        previousValue);  // Get previous value
+
+                    // Only the thread that successfully set VISIBLE bit appends the request
+                    // This ensures exactly ONE allocation request per page
+                    if (previousValue == pageEntry)
+                    {
+                        AllocationRequest request;
+                        request.pageCoords = pageCoords;
+                        request.padding = 0;
+                        _AllocationRequests.Append(request);
+                    }
                 }
+                // Case 1b: Page not allocated BUT visible - already requested by another thread, skip
             }
             else if (!GetIsVisible(pageEntry))
             {
-                // Case 2: Page allocated but not visible - mark as visible
-                InterlockedOr(_VirtualPageTable[wrappedCoords], VSM_VISIBLE_BIT);
+                // Case 2: Page allocated but not visible - mark as visible AND dirty
+                // CRITICAL FIX: Also set DIRTY bit so the page gets re-rendered
+                InterlockedOr(_VirtualPageTable[wrappedCoords], VSM_VISIBLE_BIT | VSM_DIRTY_BIT);
             }
             // Case 3: Page allocated and visible - do nothing
         }

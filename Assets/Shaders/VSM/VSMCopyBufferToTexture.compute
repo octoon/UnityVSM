@@ -1,0 +1,24 @@
+#pragma kernel CopyBufferToTexture
+
+// Copy physical memory from StructuredBuffer (used for atomic writes) to Texture2D (used for sampling)
+StructuredBuffer<uint> _PhysicalMemoryBuffer;
+RWTexture2D<float> _PhysicalMemoryTexture;
+uint _Width;
+uint _Height;
+
+[numthreads(8, 8, 1)]
+void CopyBufferToTexture(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _Width || id.y >= _Height)
+        return;
+
+    // Convert 2D to 1D index
+    uint index = id.y * _Width + id.x;
+
+    // Read uint from buffer and convert to float
+    uint depthBits = _PhysicalMemoryBuffer[index];
+    float depthValue = asfloat(depthBits);
+
+    // Write to texture
+    _PhysicalMemoryTexture[id.xy] = depthValue;
+}

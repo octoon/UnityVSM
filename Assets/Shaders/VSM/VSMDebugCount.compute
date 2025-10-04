@@ -1,0 +1,24 @@
+#pragma kernel CountAllocatedPages
+
+#include "../Include/VSMCommon.hlsl"
+
+Texture2DArray<uint> _VirtualPageTable;
+RWStructuredBuffer<uint> _CountBuffer;  // [0] = allocated count, [1] = visible count, [2] = dirty count
+
+[numthreads(8, 8, 1)]
+void CountAllocatedPages(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= VSM_PAGE_TABLE_RESOLUTION || id.y >= VSM_PAGE_TABLE_RESOLUTION || id.z >= VSM_CASCADE_COUNT)
+        return;
+
+    uint pageEntry = _VirtualPageTable[id];
+
+    if (GetIsAllocated(pageEntry))
+        InterlockedAdd(_CountBuffer[0], 1);
+
+    if (GetIsVisible(pageEntry))
+        InterlockedAdd(_CountBuffer[1], 1);
+
+    if (GetIsDirty(pageEntry))
+        InterlockedAdd(_CountBuffer[2], 1);
+}

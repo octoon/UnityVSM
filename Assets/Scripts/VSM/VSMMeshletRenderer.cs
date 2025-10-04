@@ -88,7 +88,7 @@ namespace VSM
             ComputeBuffer cascadeLightMatricesBuffer,
             ComputeBuffer cascadeOffsetsBuffer,
             RenderTexture virtualPageTable,
-            RenderTexture physicalMemory)
+            ComputeBuffer physicalMemoryBuffer)  // Changed from RenderTexture to ComputeBuffer
         {
             if (meshletMesh == null || taskShader == null || meshletRenderMaterial == null)
                 return;
@@ -140,7 +140,8 @@ namespace VSM
             meshletRenderMaterial.SetBuffer("_MeshletTriangles", meshletMesh.triangleBuffer);
             meshletRenderMaterial.SetBuffer("_VisibleMeshletIndices", visibleMeshletsBuffer);
             meshletRenderMaterial.SetTexture("_VirtualPageTable", virtualPageTable);
-            meshletRenderMaterial.SetTexture("_PhysicalMemory", physicalMemory);
+            meshletRenderMaterial.SetBuffer("_PhysicalMemory", physicalMemoryBuffer);  // Use buffer instead of texture
+            meshletRenderMaterial.SetInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);  // For 2D to 1D conversion
             meshletRenderMaterial.SetBuffer("_CascadeLightMatrices", cascadeLightMatricesBuffer);
             meshletRenderMaterial.SetBuffer("_CascadeOffsets", cascadeOffsetsBuffer);
             meshletRenderMaterial.SetInt("_CurrentCascade", cascadeIndex);

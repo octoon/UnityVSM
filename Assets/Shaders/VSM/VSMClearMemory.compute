@@ -1,10 +1,28 @@
 #pragma kernel ClearToOne
+#pragma kernel ClearBufferToOne
 
+// DX12: Use uint texture for InterlockedMin support
 RWTexture2D<uint> _Target;
+
+// For buffer clearing
+RWStructuredBuffer<uint> _PhysicalMemoryBuffer;
+uint _TotalTexels;
+uint _Offset;  // Offset for batched dispatch
 
 [numthreads(8, 8, 1)]
 void ClearToOne(uint3 id : SV_DispatchThreadID)
 {
-    // Store 1.0 as uint (IEEE 754: 0x3F800000)
+    // Store 1.0 as uint (floatBitsToUint(1.0) = 0x3F800000)
     _Target[id.xy] = asuint(1.0);
+}
+
+[numthreads(256, 1, 1)]
+void ClearBufferToOne(uint3 id : SV_DispatchThreadID)
+{
+    uint index = _Offset + id.x;
+    if (index >= _TotalTexels)
+        return;
+
+    // Store 1.0 as uint (floatBitsToUint(1.0) = 0x3F800000)
+    _PhysicalMemoryBuffer[index] = asuint(1.0);
 }

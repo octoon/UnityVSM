@@ -2,8 +2,9 @@
 
 #include "../Include/VSMCommon.hlsl"
 
-// Physical memory texture - use uint for atomic operations
-RWTexture2D<uint> _PhysicalMemory;
+// Physical memory buffer - use StructuredBuffer for atomic operations compatibility
+RWStructuredBuffer<uint> _PhysicalMemoryBuffer;
+uint _PhysicalMemoryWidth;  // For 2D to 1D index conversion
 
 // Allocation requests (these pages are dirty and need clearing)
 struct AllocationRequest
@@ -50,6 +51,9 @@ void ClearDirtyPages(uint3 id : SV_DispatchThreadID)
     int2 texelCoordsInPage = id.xy;
     int2 physicalTexelCoords = physicalPageCoords * VSM_PAGE_SIZE + texelCoordsInPage;
 
-    // Clear to far plane (1.0) - store as uint representation
-    _PhysicalMemory[physicalTexelCoords] = asuint(1.0);
+    // Convert 2D to 1D index for StructuredBuffer
+    uint bufferIndex = physicalTexelCoords.y * _PhysicalMemoryWidth + physicalTexelCoords.x;
+
+    // Clear to far plane (1.0 as uint bits)
+    _PhysicalMemoryBuffer[bufferIndex] = asuint(1.0);
 }
