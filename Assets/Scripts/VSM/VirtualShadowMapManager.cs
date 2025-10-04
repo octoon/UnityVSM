@@ -23,6 +23,19 @@ namespace VSM
             Cleanup();
         }
 
+        // Extra early hooks to guarantee global buffers are bound before any draw on D3D12
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
+        static void InitAfterAssembliesLoaded()
+        {
+            EnsureInitialized();
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSplashScreen)]
+        static void InitBeforeSplash()
+        {
+            EnsureInitialized();
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         static void InitializeBeforeScene()
         {
