@@ -344,8 +344,7 @@ MonoBehaviour:
   useMeshletRendering: 0
   meshletTaskShader: {fileID: 0}
   meshletRenderShader: {fileID: 0}
-  debugVisualization: 1
-  debugCountShader: {fileID: 0}
+  
 --- !u!114 &963194230
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -19,23 +19,7 @@
 3. 应用到物体
 ```
 
-### ✅ VSM/ForwardLitDebug
-**用于调试！**
-- 路径：`VSM/ForwardLitDebug`
-- 类型：前向渲染 + 调试可视化
-- 调试模式：
-  - **Off**: 正常渲染
-  - **Shadow**: 阴影可视化（黑=阴影，白=光照）
-  - **Cascade**: Cascade层级可视化（颜色编码）
-  - **PageAllocation**: 页面分配可视化（绿=已分配，红=未分配）
-
-**调试技巧：**
-```
-如果阴影不显示：
-1. 切换Debug Mode到Shadow，查看是否有阴影数据
-2. 切换到PageAllocation，检查页面是否分配（应该是绿色）
-3. 切换到Cascade，查看cascade分布是否正确
-```
+<!-- 调试版 ForwardLitDebug 已移除，使用普通 ForwardLit 并借助日志/可视化面板进行排查 -->
 
 ### ✅ VSM/SimpleShadowReceiver
 - 路径：`VSM/SimpleShadowReceiver`
@@ -88,7 +72,6 @@
 | Shader | VSM阴影 | 光照模型 | 调试功能 | 推荐度 |
 |--------|---------|----------|----------|--------|
 | VSM/ForwardLit | ✅ | Lambert | ❌ | ⭐⭐⭐⭐⭐ |
-| VSM/ForwardLitDebug | ✅ | Lambert | ✅ | ⭐⭐⭐⭐ (调试) |
 | VSM/SimpleShadowReceiver | ✅ | 简单 | ❌ | ⭐⭐⭐ |
 | VSM/StandardSurface | ❌ | PBR | ❌ | ⭐ (不支持VSM) |
 
@@ -104,25 +87,14 @@ _ShadowBias     // 阴影偏移 (默认: 0.001)
                 // 如果阴影悬浮(peter panning)，减小此值
 ```
 
-### VSM/ForwardLitDebug
-
-```hlsl
-_Color          // 基础颜色
-_MainTex        // 主纹理
-_ShadowBias     // 阴影偏移
-_DebugMode      // 调试模式
-                // 0 = Off (正常)
-                // 1 = Shadow (阴影)
-                // 2 = Cascade (层级)
-                // 3 = PageAllocation (页面分配)
-```
+<!-- 调试版 ForwardLitDebug 已移除 -->
 
 ## 常见问题
 
 ### Q: 为什么我的物体没有阴影？
 
 **检查清单：**
-1. ✅ 使用了 VSM/ForwardLit 或 VSM/ForwardLitDebug shader？
+1. ✅ 使用了 VSM/ForwardLit shader？
 2. ✅ VirtualShadowMapManager在运行？（Play模式）
 3. ✅ Directional Light已分配？
 4. ✅ 物体在Shadow Casters Layer？
@@ -130,13 +102,9 @@ _DebugMode      // 调试模式
 
 **调试步骤：**
 ```
-1. 使用VSM/ForwardLitDebug材质
-2. Debug Mode设为Shadow
-   - 如果是白色：没有采样到阴影
-   - 如果是黑色：在阴影中
-3. Debug Mode设为PageAllocation
-   - 绿色：页面已分配（正常）
-   - 红色：页面未分配（VSM系统问题）
+1. 使用 VSM/ForwardLit 材质并检查阴影强度/偏移
+2. 在场景窗口观察阴影是否随相机/物体移动更新
+3. 若需要更底层排查，可启用日志或添加可视化面板（非默认提供）
 ```
 
 ### Q: 阴影有锯齿或闪烁？
@@ -174,15 +142,17 @@ Fragment Shader:
 ### 深度存储格式
 
 ```hlsl
-// 物理内存使用uint存储
-RWTexture2D<uint> _VSM_PhysicalMemory
+// 写入路径（绘制阶段）：原子写入 StructuredBuffer<uint>
+RWStructuredBuffer<uint> _PhysicalMemoryBuffer;
+uint idx = y * PhysicalWidth + x;
+InterlockedMin(_PhysicalMemoryBuffer[idx], asuint(depth));
 
-// 写入：
-InterlockedMin(_VSM_PhysicalMemory[coords], asuint(depth));
+// 复制至纹理（采样阶段使用）：compute shader 将 Buffer -> Texture2D<float>
+RWTexture2D<float> _PhysicalMemoryTexture;
 
-// 读取：
-uint depthUint = _VSM_PhysicalMemory.Load(int3(coords, 0)).r;
-float depth = asfloat(depthUint);
+// 采样：
+Texture2D<float> _VSM_PhysicalMemory;
+float depth = _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
 ```
 
 ## 更新日志

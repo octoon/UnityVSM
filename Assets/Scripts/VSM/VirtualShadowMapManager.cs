@@ -134,14 +134,7 @@ namespace VSM
         [SerializeField] private ComputeShader meshletTaskShader;
         [SerializeField] private Shader meshletRenderShader;
 
-        [Header("Debug")]
-        [SerializeField] private bool debugVisualization = false;
-        [SerializeField] private ComputeShader debugCountShader;  // Debug shader to count allocated pages
-        [SerializeField] private ComputeShader debugTempRTShader;  // Debug shader to check temp RT contents
-        [SerializeField] private ComputeShader debugPhysicalMemoryShader;  // Debug shader to check physical memory
-        [SerializeField] private bool disableSlidingWindow = false;  // DEBUG: Disable sliding window to test offset calculation
-        [SerializeField] private bool allocateAllPages = false;  // DEBUG: Allocate all pages to test rendering
-        [SerializeField] private ComputeShader allocateAllPagesShader;  // DEBUG shader
+        // Debug options removed for production build
 
         // Core components
         private Camera mainCamera;
@@ -318,15 +311,8 @@ namespace VSM
                 int offsetX = Mathf.FloorToInt(originX / pageWorldSize);
                 int offsetY = Mathf.FloorToInt(originY / pageWorldSize);
 
-                // DEBUG: Option to disable sliding window
-                if (disableSlidingWindow)
-                {
-                    cascadeOffsets[i] = Vector2Int.zero;
-                }
-                else
-                {
-                    cascadeOffsets[i] = new Vector2Int(offsetX, offsetY);
-                }
+                // Always enable sliding window in production
+                cascadeOffsets[i] = new Vector2Int(offsetX, offsetY);
 
                 // Store frustum origin for next frame comparison (in 2D light space)
                 Vector3 cascadeOrigin = new Vector3(originX, originY, 0);
@@ -394,23 +380,7 @@ namespace VSM
             // Phase 3: Copy buffer to texture for sampling
             physicalMemory.CopyBufferToTexture();
 
-            // DEBUG: Immediately check buffer AFTER CopyBufferToTexture
-            if (debugPhysicalMemoryShader != null)
-            {
-                Debug.Log($"[VSM DEBUG IMMEDIATE] Right after CopyBufferToTexture. Buffer ID: {physicalMemory.Buffer.GetNativeBufferPtr().ToInt64():X}");
-
-                ComputeBuffer debugBuffer = new ComputeBuffer(10, sizeof(float));
-                int kernel = debugPhysicalMemoryShader.FindKernel("DebugPhysicalMemory");
-                debugPhysicalMemoryShader.SetBuffer(kernel, "_PhysicalMemoryBuffer", physicalMemory.Buffer);
-                debugPhysicalMemoryShader.SetBuffer(kernel, "_DebugOutput", debugBuffer);
-                debugPhysicalMemoryShader.SetInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
-                debugPhysicalMemoryShader.Dispatch(kernel, 1, 1, 1);
-
-                float[] samples = new float[10];
-                debugBuffer.GetData(samples);
-                Debug.Log($"[VSM IMMEDIATE Debug] Samples: [{samples[0]:F4}, {samples[1]:F4}, {samples[2]:F4}]");
-                debugBuffer.Release();
-            }
+            // Debug buffer inspection removed
 
             // Bind VSM data for sampling in shaders
             BindVSMDataToShaders();
@@ -438,25 +408,7 @@ namespace VSM
 
         void BookkeepingPhase()
         {
-            // DEBUG: Skip normal bookkeeping and allocate all pages
-            if (allocateAllPages && allocateAllPagesShader != null)
-            {
-                int kernel = allocateAllPagesShader.FindKernel("AllocateAllPages");
-                allocateAllPagesShader.SetTexture(kernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
-                allocateAllPagesShader.SetBuffer(kernel, "_PhysicalPageTable", physicalPageTable.Buffer);
-                allocateAllPagesShader.Dispatch(kernel,
-                    Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
-                    Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
-                    VSMConstants.CASCADE_COUNT);
-
-                Debug.Log("[VSM DEBUG] Allocated ALL pages for testing");
-
-                // CRITICAL: Also clear all physical memory to 1.0 (far plane)
-                // Since we skipped normal allocation, ClearDirtyPages won't run
-                physicalMemory.ClearMemory();
-
-                return;
-            }
+            // Production: no allocate-all debug path
 
             // Normal bookkeeping follows...
             // Step 0: Clear visible flags (CRITICAL - must be done first every frame)
@@ -600,28 +552,7 @@ namespace VSM
 
                     allocatePagesShader.Dispatch(allocKernel, threadGroups, 1, 1);
 
-                    // DEBUG: Log allocated pages
-                    Debug.Log($"[VSM AllocationPhase] Allocated {allocationRequestCount} pages (free: {pageCounts[0]}, used: {pageCounts[1]})");
-
-                    // DEBUG: Count allocated pages in VPT
-                    if (debugCountShader != null)
-                    {
-                        ComputeBuffer countBuffer = new ComputeBuffer(3, sizeof(uint));
-                        countBuffer.SetData(new uint[] { 0, 0, 0 });
-
-                        int countKernel = debugCountShader.FindKernel("CountAllocatedPages");
-                        debugCountShader.SetTexture(countKernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
-                        debugCountShader.SetBuffer(countKernel, "_CountBuffer", countBuffer);
-                        debugCountShader.Dispatch(countKernel,
-                            Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
-                            Mathf.CeilToInt(VSMConstants.PAGE_TABLE_RESOLUTION / 8.0f),
-                            VSMConstants.CASCADE_COUNT);
-
-                        uint[] debugCounts = new uint[3];
-                        countBuffer.GetData(debugCounts);
-                        Debug.Log($"[VSM DEBUG] VPT state: Allocated={debugCounts[0]}, Visible={debugCounts[1]}, Dirty={debugCounts[2]}");
-                        countBuffer.Release();
-                    }
+                    // Debug counts/logs removed
                 }
             }
 
@@ -791,8 +722,7 @@ namespace VSM
             // Get all shadow casters in the scene
             Renderer[] renderers = FindObjectsOfType<Renderer>();
 
-            // DEBUG: Log total renderer count
-            Debug.Log($"[VSM DrawingPhase] Total renderers found: {renderers.Length}");
+            // Debug renderer count log removed
 
             // Render each cascade
             for (int cascadeIndex = 0; cascadeIndex < VSMConstants.CASCADE_COUNT; cascadeIndex++)
@@ -834,8 +764,7 @@ namespace VSM
                     drawnThisCascade++; // DEBUG counter
                 }
 
-                // DEBUG: Log draw count per cascade
-                Debug.Log($"[VSM DrawingPhase] Cascade {cascadeIndex}: Drew {drawnThisCascade} objects");
+                // Debug draw count log removed
 
                 // Copy from temp RT to physical memory using compute shader
                 if (copyDepthShader != null)
@@ -852,11 +781,11 @@ namespace VSM
                     int threadGroups = Mathf.CeilToInt(virtualRes / 8.0f);
                     vsmCommandBuffer.DispatchCompute(copyDepthShader, kernel, threadGroups, threadGroups, 1);
 
-                    Debug.Log($"[VSM CopyDepth] Cascade {cascadeIndex}: Dispatched copy with {threadGroups}x{threadGroups} thread groups");
+                    // Debug copy log removed
                 }
                 else
                 {
-                    Debug.LogError("[VSM CopyDepth] CopyDepthShader is NULL!");
+                    // No copy shader set
                 }
             }
 
@@ -866,23 +795,7 @@ namespace VSM
             // Execute the command buffer
             Graphics.ExecuteCommandBuffer(vsmCommandBuffer);
 
-            // DEBUG: Check physical memory after rendering
-            if (debugPhysicalMemoryShader != null)
-            {
-                Debug.Log($"[VSM DEBUG] About to read from buffer. Buffer InstanceID: {physicalMemory.Buffer.GetNativeBufferPtr().ToInt64():X}");
-
-                ComputeBuffer debugBuffer = new ComputeBuffer(10, sizeof(float));
-                int kernel = debugPhysicalMemoryShader.FindKernel("DebugPhysicalMemory");
-                debugPhysicalMemoryShader.SetBuffer(kernel, "_PhysicalMemoryBuffer", physicalMemory.Buffer);
-                debugPhysicalMemoryShader.SetBuffer(kernel, "_DebugOutput", debugBuffer);
-                debugPhysicalMemoryShader.SetInt("_PhysicalMemoryWidth", VSMConstants.PHYSICAL_MEMORY_WIDTH);
-                debugPhysicalMemoryShader.Dispatch(kernel, 1, 1, 1);
-
-                float[] samples = new float[10];
-                debugBuffer.GetData(samples);
-                Debug.Log($"[VSM PhysicalMemory Debug] First 10 page corners: [{samples[0]:F4}, {samples[1]:F4}, {samples[2]:F4}, {samples[3]:F4}, {samples[4]:F4}, {samples[5]:F4}, {samples[6]:F4}, {samples[7]:F4}, {samples[8]:F4}, {samples[9]:F4}]");
-                debugBuffer.Release();
-            }
+            // Debug physical memory inspection removed
         }
 
         void DrawingPhase_Meshlet()
@@ -1084,14 +997,6 @@ namespace VSM
             }
         }
 
-        void OnGUI()
-        {
-            if (debugVisualization)
-            {
-                GUI.Label(new Rect(10, 10, 300, 20), "Virtual Shadow Maps Active");
-                GUI.Label(new Rect(10, 30, 300, 20), $"Physical Memory: {VSMConstants.PHYSICAL_MEMORY_WIDTH}x{VSMConstants.PHYSICAL_MEMORY_HEIGHT}");
-                GUI.Label(new Rect(10, 50, 300, 20), $"Cascades: {VSMConstants.CASCADE_COUNT}");
-            }
-        }
+        // OnGUI debug overlay removed
     }
 }

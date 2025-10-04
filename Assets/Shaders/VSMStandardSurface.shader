@@ -14,7 +14,7 @@ Shader "VSM/StandardSurface"
 
         CGPROGRAM
         // Surface shader - simplified, no VSM shadows for now
-        // Use VSM/ForwardLit or VSM/ForwardLitDebug instead for full VSM support
+        // Use VSM/ForwardLit for full VSM support
         #pragma surface surf Standard fullforwardshadows
         #pragma target 3.0
 
