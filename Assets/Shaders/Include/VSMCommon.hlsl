@@ -163,7 +163,9 @@ void ProjectBoundsToLightSpace(float3 boundsMin, float3 boundsMax, float4x4 ligh
     for (int i = 0; i < 8; i++)
     {
         float4 lightSpacePos = mul(lightMatrix, float4(corners[i], 1.0));
-        float2 uv = lightSpacePos.xy * 0.5 + 0.5;
+        // CRITICAL: perspective divide to get NDC before mapping to [0,1]
+        float3 ndc = lightSpacePos.xyz / lightSpacePos.w;
+        float2 uv = ndc.xy * 0.5 + 0.5;
         uvMin = min(uvMin, uv);
         uvMax = max(uvMax, uv);
     }

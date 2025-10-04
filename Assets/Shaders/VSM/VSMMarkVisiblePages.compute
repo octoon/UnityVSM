@@ -164,8 +164,17 @@ void MarkVisiblePages(uint3 id : SV_DispatchThreadID)
             else if (!GetIsVisible(pageEntry))
             {
                 // Case 2: Page allocated but not visible - mark as visible AND dirty
-                // CRITICAL FIX: Also set DIRTY bit so the page gets re-rendered
-                InterlockedOr(_VirtualPageTable[wrappedCoords], VSM_VISIBLE_BIT | VSM_DIRTY_BIT);
+                // CRITICAL: Only append one clear request using atomic OR's previous value
+                uint prevValue;
+                InterlockedOr(_VirtualPageTable[wrappedCoords], VSM_VISIBLE_BIT | VSM_DIRTY_BIT, prevValue);
+
+                if ((prevValue & VSM_VISIBLE_BIT) == 0)
+                {
+                    AllocationRequest request;
+                    request.pageCoords = pageCoords;
+                    request.padding = 0;
+                    _AllocationRequests.Append(request);
+                }
             }
             // Case 3: Page allocated and visible - do nothing
         }

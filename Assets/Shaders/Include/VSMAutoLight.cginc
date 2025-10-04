@@ -13,7 +13,8 @@
 
 // Virtual Page Table and Physical Memory
 Texture2DArray<uint> _VSM_VirtualPageTable;
-Texture2D<uint> _VSM_PhysicalMemory;
+// Physical memory for sampling is float texture (copied from atomic buffer)
+Texture2D<float> _VSM_PhysicalMemory;
 
 // Cascade data
 StructuredBuffer<float4x4> _VSM_CascadeLightMatrices;
@@ -21,18 +22,19 @@ StructuredBuffer<int2> _VSM_CascadeOffsets;
 float _VSM_FirstCascadeSize;
 float3 _VSM_CameraPosition;
 
-// Helper function to load and convert depth from uint to float
+// Helper function to load depth
 float LoadPhysicalMemoryDepth(int2 pixel)
 {
-    uint depthUint = _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
-    return asfloat(depthUint);
+    return _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
 }
 
 // Calculate cascade level based on world position
 int VSM_CalculateCascadeLevel(float3 worldPos)
 {
+    // Use distance-based heuristic consistent with MarkVisiblePages
     float distance = length(worldPos - _VSM_CameraPosition);
-    float level = max(ceil(log2(distance / _VSM_FirstCascadeSize)), 0);
+    float cascadeRadius = _VSM_FirstCascadeSize * 0.5;
+    float level = max(ceil(log2(distance / cascadeRadius)), 0);
     return min((int)level, VSM_CASCADE_COUNT - 1);
 }
 
@@ -42,10 +44,11 @@ float VSM_SampleShadow(float3 worldPos, float bias)
     // Calculate cascade level
     int cascadeLevel = VSM_CalculateCascadeLevel(worldPos);
 
-    // Transform to light space
+    // Transform to light space and compute UV via perspective divide
     float4x4 lightMatrix = _VSM_CascadeLightMatrices[cascadeLevel];
     float4 lightSpacePos = mul(lightMatrix, float4(worldPos, 1.0));
-    float2 lightSpaceUV = lightSpacePos.xy * 0.5 + 0.5;
+    float3 ndc = lightSpacePos.xyz / lightSpacePos.w;
+    float2 lightSpaceUV = ndc.xy * 0.5 + 0.5;
 
     // Check bounds
     if (any(lightSpaceUV < 0.0) || any(lightSpaceUV > 1.0))
@@ -77,13 +80,16 @@ float VSM_SampleShadow(float3 worldPos, float bias)
     float2 pageUV = frac(lightSpaceUV * VSM_PAGE_TABLE_RESOLUTION);
 
     // Calculate physical pixel coordinates
-    int2 physicalPixel = int2((physicalPageCoords + pageUV) * VSM_PAGE_SIZE);
+    int2 physicalPixel = physicalPageCoords * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
 
     // Load depth from physical memory
     float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
 
-    // Compare depth
-    float currentDepth = lightSpacePos.z;
+    // Compare depth (handle platform differences)
+    float currentDepth = ndc.z;
+    #if !UNITY_REVERSED_Z
+        currentDepth = currentDepth * 0.5 + 0.5;
+    #endif
     return (currentDepth - bias) > shadowDepth ? 0.0 : 1.0;
 }
 

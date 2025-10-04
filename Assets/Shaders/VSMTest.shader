@@ -25,7 +25,7 @@ Shader "VSM/Test"
 
             // VSM全局变量
             Texture2DArray<uint> _VSM_VirtualPageTable;
-            Texture2D<uint> _VSM_PhysicalMemory;
+            Texture2D<float> _VSM_PhysicalMemory;
             StructuredBuffer<float4x4> _VSM_CascadeLightMatrices;
             StructuredBuffer<int2> _VSM_CascadeOffsets;
             float _VSM_FirstCascadeSize;
@@ -66,7 +66,8 @@ Shader "VSM/Test"
                     // 转换到光空间
                     float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
                     float4 lightSpace = mul(lightMat, float4(i.worldPos, 1.0));
-                    float2 uv = lightSpace.xy * 0.5 + 0.5;
+                    float3 ndc = lightSpace.xyz / lightSpace.w;
+                    float2 uv = ndc.xy * 0.5 + 0.5;
 
                     // 边界检查
                     if (any(uv < 0.0) || any(uv > 1.0))
@@ -91,12 +92,14 @@ Shader "VSM/Test"
                     // 获取物理页
                     int2 physicalPage = UnpackPhysicalPageCoords(pageEntry);
                     float2 pageUV = frac(uv * VSM_PAGE_TABLE_RESOLUTION);
-                    int2 physicalPixel = int2((physicalPage + pageUV) * VSM_PAGE_SIZE);
+                    int2 physicalPixel = physicalPage * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
 
                     // 采样深度
-                    uint depthUint = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
-                    float shadowDepth = asfloat(depthUint);
-                    float currentDepth = lightSpace.z;
+                    float shadowDepth = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
+                    float currentDepth = ndc.z;
+                    #if !UNITY_REVERSED_Z
+                        currentDepth = currentDepth * 0.5 + 0.5;
+                    #endif
 
                     // 比较深度
                     float shadow = (currentDepth - 0.001) > shadowDepth ? 0.0 : 1.0;
@@ -112,7 +115,8 @@ Shader "VSM/Test"
 
                     float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
                     float4 lightSpace = mul(lightMat, float4(i.worldPos, 1.0));
-                    float2 uv = lightSpace.xy * 0.5 + 0.5;
+                    float3 ndc2 = lightSpace.xyz / lightSpace.w;
+                    float2 uv = ndc2.xy * 0.5 + 0.5;
 
                     if (any(uv < 0.0) || any(uv > 1.0))
                         return float4(0.5, 0, 0, 1); // 暗红色
@@ -138,7 +142,8 @@ Shader "VSM/Test"
 
                     float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
                     float4 lightSpace = mul(lightMat, float4(i.worldPos, 1.0));
-                    float2 uv = lightSpace.xy * 0.5 + 0.5;
+                    float3 ndc3 = lightSpace.xyz / lightSpace.w;
+                    float2 uv = ndc3.xy * 0.5 + 0.5;
 
                     if (any(uv < 0.0) || any(uv > 1.0))
                         return float4(0, 0, 0, 1);
@@ -157,10 +162,9 @@ Shader "VSM/Test"
 
                     int2 physicalPage = UnpackPhysicalPageCoords(pageEntry);
                     float2 pageUV = frac(uv * VSM_PAGE_TABLE_RESOLUTION);
-                    int2 physicalPixel = int2((physicalPage + pageUV) * VSM_PAGE_SIZE);
+                    int2 physicalPixel = physicalPage * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
 
-                    uint depthUint = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
-                    float depth = asfloat(depthUint);
+                    float depth = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
 
                     // 显示深度（反转以便可见）
                     return float4(1.0 - depth, 1.0 - depth, 1.0 - depth, 1);

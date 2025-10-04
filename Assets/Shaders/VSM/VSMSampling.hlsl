@@ -5,13 +5,14 @@
 
 // Virtual Page Table and Physical Memory
 Texture2DArray<uint> _VSM_VirtualPageTable;
-Texture2D<uint> _VSM_PhysicalMemory;  // Stored as uint for atomic operations (use Load, not Sample)
+// NOTE: Physical memory used for sampling is a float texture copied from the atomic buffer
+// to support standard sampling/Load. Keep this as float to match C# binding.
+Texture2D<float> _VSM_PhysicalMemory;
 
 // Helper function to load and convert depth from uint to float
 float LoadPhysicalMemoryDepth(int2 pixel)
 {
-    uint depthUint = _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
-    return asfloat(depthUint);
+    return _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
 }
 
 // Manual bilinear filtering for uint texture
@@ -44,10 +45,11 @@ float SampleVSM(float3 worldPos, float bias = 0.001)
     // Calculate cascade level
     int cascadeLevel = CalculateCascadeLevel(worldPos, _VSM_CameraPosition, _VSM_FirstCascadeSize);
 
-    // Transform to light space
+    // Transform to light space and compute UV via perspective divide
     float4x4 lightMatrix = _VSM_CascadeLightMatrices[cascadeLevel];
     float4 lightSpacePos = mul(lightMatrix, float4(worldPos, 1.0));
-    float2 lightSpaceUV = lightSpacePos.xy * 0.5 + 0.5;
+    float3 ndc = lightSpacePos.xyz / lightSpacePos.w;
+    float2 lightSpaceUV = ndc.xy * 0.5 + 0.5;
 
     // Check bounds
     if (any(lightSpaceUV < 0.0) || any(lightSpaceUV > 1.0))
@@ -85,8 +87,11 @@ float SampleVSM(float3 worldPos, float bias = 0.001)
     // Load depth from physical memory
     float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
 
-    // Compare depth
-    float currentDepth = lightSpacePos.z;
+    // Compare depth (handle platform differences consistently with rendering)
+    float currentDepth = ndc.z;
+    #if !UNITY_REVERSED_Z
+        currentDepth = currentDepth * 0.5 + 0.5;
+    #endif
     return (currentDepth - bias) > shadowDepth ? 0.0 : 1.0;
 }
 
@@ -96,10 +101,11 @@ float SampleVSM_PCF(float3 worldPos, float filterSize = 2.0, float bias = 0.001)
     // Calculate cascade level
     int cascadeLevel = CalculateCascadeLevel(worldPos, _VSM_CameraPosition, _VSM_FirstCascadeSize);
 
-    // Transform to light space
+    // Transform to light space and compute UV via perspective divide
     float4x4 lightMatrix = _VSM_CascadeLightMatrices[cascadeLevel];
     float4 lightSpacePos = mul(lightMatrix, float4(worldPos, 1.0));
-    float2 lightSpaceUV = lightSpacePos.xy * 0.5 + 0.5;
+    float3 ndc = lightSpacePos.xyz / lightSpacePos.w;
+    float2 lightSpaceUV = ndc.xy * 0.5 + 0.5;
 
     if (any(lightSpaceUV < 0.0) || any(lightSpaceUV > 1.0))
         return 1.0;
@@ -142,8 +148,10 @@ float SampleVSM_PCF(float3 worldPos, float filterSize = 2.0, float bias = 0.001)
             // FIXED: Correct formula: page_base_pixel + in_page_offset
             int2 physicalPixel = physicalPageCoords * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
             float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
-            float currentDepth = lightSpacePos.z;
-
+            float currentDepth = ndc.z;
+            #if !UNITY_REVERSED_Z
+                currentDepth = currentDepth * 0.5 + 0.5;
+            #endif
             shadow += (currentDepth - bias) > shadowDepth ? 0.0 : 1.0;
             totalWeight += 1.0;
         }
@@ -156,10 +164,11 @@ float SampleVSM_PCF(float3 worldPos, float filterSize = 2.0, float bias = 0.001)
 // Use this when sampling multiple times for the same world position
 float SampleVSMWithCascade(float3 worldPos, int cascadeLevel, float bias = 0.001)
 {
-    // Transform to light space
+    // Transform to light space and compute UV via perspective divide
     float4x4 lightMatrix = _VSM_CascadeLightMatrices[cascadeLevel];
     float4 lightSpacePos = mul(lightMatrix, float4(worldPos, 1.0));
-    float2 lightSpaceUV = lightSpacePos.xy * 0.5 + 0.5;
+    float3 ndc = lightSpacePos.xyz / lightSpacePos.w;
+    float2 lightSpaceUV = ndc.xy * 0.5 + 0.5;
 
     // Check bounds
     if (any(lightSpaceUV < 0.0) || any(lightSpaceUV > 1.0))
@@ -198,7 +207,10 @@ float SampleVSMWithCascade(float3 worldPos, int cascadeLevel, float bias = 0.001
     float shadowDepth = LoadPhysicalMemoryDepth(physicalPixel);
 
     // Compare depth
-    float currentDepth = lightSpacePos.z;
+    float currentDepth = ndc.z;
+    #if !UNITY_REVERSED_Z
+        currentDepth = currentDepth * 0.5 + 0.5;
+    #endif
     return (currentDepth - bias) > shadowDepth ? 0.0 : 1.0;
 }
 

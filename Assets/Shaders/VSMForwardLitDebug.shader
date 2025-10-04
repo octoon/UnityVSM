@@ -37,7 +37,7 @@ Shader "VSM/ForwardLitDebug"
             float _ShadowBias;
 
             Texture2DArray<uint> _VSM_VirtualPageTable;
-            Texture2D<uint> _VSM_PhysicalMemory;
+            Texture2D<float> _VSM_PhysicalMemory;
             StructuredBuffer<float4x4> _VSM_CascadeLightMatrices;
             StructuredBuffer<int2> _VSM_CascadeOffsets;
             float _VSM_FirstCascadeSize;
@@ -60,8 +60,7 @@ Shader "VSM/ForwardLitDebug"
 
             float LoadDepth(int2 pixel)
             {
-                uint depthUint = _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
-                return asfloat(depthUint);
+                return _VSM_PhysicalMemory.Load(int3(pixel, 0)).r;
             }
 
             int CalculateCascade(float3 worldPos)
@@ -77,7 +76,8 @@ Shader "VSM/ForwardLitDebug"
                 int cascade = CalculateCascade(worldPos);
                 float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
                 float4 lightSpace = mul(lightMat, float4(worldPos, 1.0));
-                float2 uv = lightSpace.xy * 0.5 + 0.5;
+                float3 ndc = lightSpace.xyz / lightSpace.w;
+                float2 uv = ndc.xy * 0.5 + 0.5;
 
                 if (any(uv < 0.0) || any(uv > 1.0))
                     return float3(1, cascade, 0);
@@ -97,10 +97,13 @@ Shader "VSM/ForwardLitDebug"
 
                 int2 physicalPage = UnpackPhysicalPageCoords(pageEntry);
                 float2 pageUV = frac(uv * VSM_PAGE_TABLE_RESOLUTION);
-                int2 physicalPixel = int2((physicalPage + pageUV) * VSM_PAGE_SIZE);
+                int2 physicalPixel = physicalPage * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
 
                 float shadowDepth = LoadDepth(physicalPixel);
-                float currentDepth = lightSpace.z;
+                float currentDepth = ndc.z;
+                #if !UNITY_REVERSED_Z
+                    currentDepth = currentDepth * 0.5 + 0.5;
+                #endif
                 float shadow = (currentDepth - _ShadowBias) > shadowDepth ? 0.0 : 1.0;
 
                 return float3(shadow, cascade, allocated ? 1 : 0);

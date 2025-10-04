@@ -8,19 +8,24 @@ RWTexture2DArray<uint> _VirtualPageTable;
 // Per-cascade data
 StructuredBuffer<int2> _CascadeOffsets;
 StructuredBuffer<int2> _CascadeShifts;  // How many pages the cascade moved
-StructuredBuffer<uint> _DynamicInvalidationMasks;  // Bitmask for dynamic objects
+StructuredBuffer<uint> _DynamicInvalidationMasks;  // Bitmask for dynamic objects (stride = 32 uints per cascade)
+int _DynamicMaskStride; // number of uints per cascade (should be 32 for 32x32 pages)
 
 int _CurrentCascade;
 
 // Extract bit from bitmask for a page
-bool ExtractPageBitFromMask(int3 pageCoords, uint mask)
+bool ExtractPageBitFromMask(int3 pageCoords)
 {
+    // Compute linear page index within cascade
     uint linearIndex = (uint)(pageCoords.y * VSM_PAGE_TABLE_RESOLUTION + pageCoords.x);
-    uint maskIndex = linearIndex / 32u;
-    uint bitIndex = linearIndex % 32u;
+    uint uintIndexInCascade = linearIndex >> 5;     // / 32
+    uint bitIndex = linearIndex & 31u;              // % 32
 
-    // Simple version - would need proper indexing for full implementation
-    return (mask & (1u << bitIndex)) != 0;
+    // Global index into mask buffer
+    uint maskIndex = (uint)pageCoords.z * (uint)_DynamicMaskStride + uintIndexInCascade;
+
+    uint word = _DynamicInvalidationMasks[maskIndex];
+    return (word & (1u << bitIndex)) != 0u;
 }
 
 [numthreads(8, 8, 1)]
@@ -45,11 +50,7 @@ void FreeInvalidatedPages(uint3 id : SV_DispatchThreadID)
         shouldClearWrap = true;
 
     // Check if page should be cleared due to dynamic objects
-    bool shouldClearDynamic = false;
-    if ((uint)_DynamicInvalidationMasks.Length > (uint)_CurrentCascade)
-    {
-        shouldClearDynamic = ExtractPageBitFromMask(pageCoords, _DynamicInvalidationMasks[_CurrentCascade]);
-    }
+    bool shouldClearDynamic = ExtractPageBitFromMask(pageCoords);
 
     // Free the page if needed
     if (shouldClearWrap || shouldClearDynamic)

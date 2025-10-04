@@ -23,7 +23,7 @@ Shader "VSM/ShadowOnly"
 
             // VSM全局变量
             Texture2DArray<uint> _VSM_VirtualPageTable;
-            Texture2D<uint> _VSM_PhysicalMemory;
+            Texture2D<float> _VSM_PhysicalMemory;
             StructuredBuffer<float4x4> _VSM_CascadeLightMatrices;
             StructuredBuffer<int2> _VSM_CascadeOffsets;
             float _VSM_FirstCascadeSize;
@@ -50,10 +50,8 @@ Shader "VSM/ShadowOnly"
 
             float4 frag(v2f i) : SV_Target
             {
-                // 计算cascade
-                float dist = length(i.worldPos - _VSM_CameraPosition);
-                int cascade = (int)max(0, ceil(log2(dist / _VSM_FirstCascadeSize)));
-                cascade = min(cascade, VSM_CASCADE_COUNT - 1);
+                // 计算cascade（与MarkVisiblePages一致的启发式）
+                int cascade = CalculateCascadeLevel(i.worldPos, _VSM_CameraPosition, _VSM_FirstCascadeSize);
 
                 // 转换到光空间
                 float4x4 lightMat = _VSM_CascadeLightMatrices[cascade];
@@ -88,18 +86,14 @@ Shader "VSM/ShadowOnly"
                 // 获取物理页
                 int2 physicalPage = UnpackPhysicalPageCoords(pageEntry);
                 float2 pageUV = frac(uv * VSM_PAGE_TABLE_RESOLUTION);
-                int2 physicalPixel = int2((physicalPage + pageUV) * VSM_PAGE_SIZE);
+                int2 physicalPixel = physicalPage * VSM_PAGE_SIZE + int2(pageUV * VSM_PAGE_SIZE);
 
                 // 采样深度
-                uint depthUint = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
-                float shadowDepth = asfloat(depthUint);
+                float shadowDepth = _VSM_PhysicalMemory.Load(int3(physicalPixel, 0)).r;
                 float currentDepth = ndc.z;  // Use NDC depth for comparison
-
-                // DEBUG: 可视化深度值
-                // 取消注释下面的行来调试深度值范围
-                return float4(shadowDepth, shadowDepth, shadowDepth, 1.0); // 查看存储的深度
-                //return float4(currentDepth, currentDepth, currentDepth, 1.0); // 查看当前深度
-                //return float4(abs(currentDepth - shadowDepth) * 100, 0, 0, 1); // 查看深度差异
+                #if !UNITY_REVERSED_Z
+                    currentDepth = currentDepth * 0.5 + 0.5;
+                #endif
 
                 // 比较深度
                 float shadow = (currentDepth - _ShadowBias) > shadowDepth ? 0.0 : 1.0;

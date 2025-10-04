@@ -1,4 +1,5 @@
 #pragma kernel ClearDirtyPages
+#pragma kernel ClearDirtyFlags
 
 #include "../Include/VSMCommon.hlsl"
 
@@ -56,4 +57,26 @@ void ClearDirtyPages(uint3 id : SV_DispatchThreadID)
 
     // Clear to far plane (1.0 as uint bits)
     _PhysicalMemoryBuffer[bufferIndex] = asuint(1.0);
+
+    // Note: do not clear DIRTY bit here; it is used by HPB and draw this frame.
+}
+
+// Finalize pass: clear DIRTY bit for each requested page once after drawing completes
+[numthreads(64, 1, 1)]
+void ClearDirtyFlags(uint3 id : SV_DispatchThreadID)
+{
+    uint requestIndex = id.x;
+    if (requestIndex >= _AllocationRequestCount)
+        return;
+
+    AllocationRequest request = _AllocationRequests[requestIndex];
+    int3 pageCoords = request.pageCoords;
+
+    int2 cascadeOffset = _CascadeOffsets[pageCoords.z];
+    int3 wrappedCoords = VirtualPageCoordsToWrappedCoords(pageCoords, cascadeOffset);
+    if (wrappedCoords.x < 0)
+        return;
+
+    // Clear DIRTY bit atomically
+    InterlockedAnd(_VirtualPageTable[wrappedCoords], ~VSM_DIRTY_BIT);
 }

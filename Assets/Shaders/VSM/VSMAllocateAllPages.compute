@@ -3,7 +3,7 @@
 #include "../Include/VSMCommon.hlsl"
 
 RWTexture2DArray<uint> _VirtualPageTable;
-RWStructuredBuffer<uint> _PhysicalPageTable;
+RWStructuredBuffer<uint4> _PhysicalPageTable;
 
 [numthreads(8, 8, 1)]
 void AllocateAllPages(uint3 id : SV_DispatchThreadID)
@@ -29,6 +29,6 @@ void AllocateAllPages(uint3 id : SV_DispatchThreadID)
     // Write to page table (no offset, direct mapping)
     _VirtualPageTable[id] = pageEntry;
 
-    // Update physical page table
-    _PhysicalPageTable[pageIndex] = (id.z << 16) | (id.y << 8) | id.x;
+    // Update physical page table (store virtual coords and allocated flag)
+    _PhysicalPageTable[pageIndex] = uint4(id.x, id.y, id.z, 1);
 }

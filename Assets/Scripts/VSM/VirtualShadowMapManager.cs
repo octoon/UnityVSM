@@ -158,6 +158,9 @@ namespace VSM
 
         // Dynamic invalidation masks (for moving objects)
         private ComputeBuffer dynamicInvalidationMasksBuffer;
+        private const int DynamicMaskStride = VSMConstants.PAGE_TABLE_RESOLUTION * VSMConstants.PAGE_TABLE_RESOLUTION / 32; // 32
+        private uint[] dynamicInvalidationMaskCPU; // CPU-side bitmask (stride * cascades)
+        private System.Collections.Generic.Dictionary<Renderer, Bounds> prevRendererBounds = new System.Collections.Generic.Dictionary<Renderer, Bounds>();
 
         // Previous frame cascade origins for tracking movement (sliding window)
         private Vector3[] previousCascadeOrigins;
@@ -206,10 +209,11 @@ namespace VSM
             cascadeShiftsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
             previousCascadeOrigins = new Vector3[VSMConstants.CASCADE_COUNT];
 
-            // Initialize dynamic invalidation masks (empty for now - for static scenes)
-            dynamicInvalidationMasksBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(uint));
-            uint[] emptyMasks = new uint[VSMConstants.CASCADE_COUNT];
-            dynamicInvalidationMasksBuffer.SetData(emptyMasks);
+            // Initialize dynamic invalidation masks (32 uint per cascade)
+            dynamicInvalidationMasksBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT * DynamicMaskStride, sizeof(uint));
+            dynamicInvalidationMaskCPU = new uint[VSMConstants.CASCADE_COUNT * DynamicMaskStride];
+            System.Array.Clear(dynamicInvalidationMaskCPU, 0, dynamicInvalidationMaskCPU.Length);
+            dynamicInvalidationMasksBuffer.SetData(dynamicInvalidationMaskCPU);
 
             // Allocation counter buffer: [0] = free page counter, [1] = used page counter
             // Use Raw type for CopyComputeBufferCount compatibility
@@ -410,6 +414,26 @@ namespace VSM
 
             // Bind VSM data for sampling in shaders
             BindVSMDataToShaders();
+
+            // Finalize: clear DIRTY flags for processed pages (after drawing finishes)
+            if (clearPagesShader != null)
+            {
+                ComputeBuffer.CopyCount(pageTable.AllocationRequests, allocationCounterBuffer, 0);
+                uint[] counts2 = new uint[2];
+                allocationCounterBuffer.GetData(counts2);
+                uint finalizeRequestCount = counts2[0];
+                if (finalizeRequestCount > 0)
+                {
+                    int finalizeKernel = clearPagesShader.FindKernel("ClearDirtyFlags");
+                    clearPagesShader.SetTexture(finalizeKernel, "_VirtualPageTable", pageTable.VirtualPageTableTexture);
+                    clearPagesShader.SetBuffer(finalizeKernel, "_AllocationRequests", pageTable.AllocationRequests);
+                    clearPagesShader.SetBuffer(finalizeKernel, "_CascadeOffsets", cascadeOffsetsBuffer);
+                    clearPagesShader.SetInt("_AllocationRequestCount", (int)finalizeRequestCount);
+
+                    int groups = Mathf.Min(65535, Mathf.CeilToInt(finalizeRequestCount / 64.0f));
+                    clearPagesShader.Dispatch(finalizeKernel, groups, 1, 1);
+                }
+            }
         }
 
         void BookkeepingPhase()
@@ -447,7 +471,10 @@ namespace VSM
                     VSMConstants.CASCADE_COUNT);
             }
 
-            // Step 1: Free invalidated pages
+            // Step 1a: Build dynamic invalidation masks from moved renderers
+            BuildDynamicInvalidationMasks();
+
+            // Step 1b: Free invalidated pages
             if (freeInvalidatedPagesShader != null)
             {
                 int kernel = freeInvalidatedPagesShader.FindKernel("FreeInvalidatedPages");
@@ -455,6 +482,7 @@ namespace VSM
                 freeInvalidatedPagesShader.SetBuffer(kernel, "_CascadeOffsets", cascadeOffsetsBuffer);
                 freeInvalidatedPagesShader.SetBuffer(kernel, "_CascadeShifts", cascadeShiftsBuffer);
                 freeInvalidatedPagesShader.SetBuffer(kernel, "_DynamicInvalidationMasks", dynamicInvalidationMasksBuffer);
+                freeInvalidatedPagesShader.SetInt("_DynamicMaskStride", DynamicMaskStride);
 
                 for (int i = 0; i < VSMConstants.CASCADE_COUNT; i++)
                 {
@@ -601,6 +629,7 @@ namespace VSM
             if (clearPagesShader != null)
             {
                 // Get allocation request count again for clearing
+                ComputeBuffer.CopyCount(pageTable.AllocationRequests, allocationCounterBuffer, 0);
                 uint[] counts = new uint[2];
                 allocationCounterBuffer.GetData(counts);
                 uint allocationRequestCount = counts[0];
@@ -627,6 +656,93 @@ namespace VSM
 
             // Build HPB for culling
             hpb.BuildHPB(pageTable.VirtualPageTableTexture);
+        }
+
+        // Build dynamic invalidation bit masks for objects that moved this frame
+        void BuildDynamicInvalidationMasks()
+        {
+            if (dynamicInvalidationMaskCPU == null)
+                return;
+
+            System.Array.Clear(dynamicInvalidationMaskCPU, 0, dynamicInvalidationMaskCPU.Length);
+
+            // Iterate all renderers and mark pages their bounds cover if moved since last frame
+            var renderers = FindObjectsOfType<Renderer>();
+
+            for (int ri = 0; ri < renderers.Length; ri++)
+            {
+                var r = renderers[ri];
+                if (((1 << r.gameObject.layer) & shadowCasters) == 0)
+                    continue;
+
+                Bounds current = r.bounds;
+                bool moved = true;
+                if (prevRendererBounds.TryGetValue(r, out var prev))
+                {
+                    // Consider moved if center or extents changed beyond small epsilon
+                    moved = (prev.center - current.center).sqrMagnitude > 1e-6f || (prev.extents - current.extents).sqrMagnitude > 1e-6f;
+                }
+                prevRendererBounds[r] = current;
+
+                if (!moved) continue;
+
+                // Project to each cascade and mark intersecting pages
+                for (int c = 0; c < VSMConstants.CASCADE_COUNT; c++)
+                {
+                    Matrix4x4 lightMat = cascadeLightMatrices[c];
+                    // Transform 8 corners into light space
+                    Vector3 min = current.min; Vector3 max = current.max;
+                    Vector3[] corners = new Vector3[8]
+                    {
+                        new Vector3(min.x,min.y,min.z), new Vector3(max.x,min.y,min.z),
+                        new Vector3(min.x,max.y,min.z), new Vector3(max.x,max.y,min.z),
+                        new Vector3(min.x,min.y,max.z), new Vector3(max.x,min.y,max.z),
+                        new Vector3(min.x,max.y,max.z), new Vector3(max.x,max.y,max.z)
+                    };
+
+                    Vector2 uvMin = new Vector2(1e10f, 1e10f);
+                    Vector2 uvMax = new Vector2(-1e10f, -1e10f);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        Vector4 lp = lightMat * new Vector4(corners[i].x, corners[i].y, corners[i].z, 1.0f);
+                        Vector3 ndc = new Vector3(lp.x / lp.w, lp.y / lp.w, lp.z / lp.w);
+                        Vector2 uv = new Vector2(ndc.x * 0.5f + 0.5f, ndc.y * 0.5f + 0.5f);
+                        uvMin = Vector2.Min(uvMin, uv);
+                        uvMax = Vector2.Max(uvMax, uv);
+                    }
+
+                    // Clamp intersection with [0,1]
+                    uvMin = Vector2.Max(uvMin, Vector2.zero);
+                    uvMax = Vector2.Min(uvMax, Vector2.one);
+                    if (uvMin.x >= uvMax.x || uvMin.y >= uvMax.y)
+                        continue;
+
+                    // Convert to page coordinates and clamp
+                    Vector2Int pageMin = new Vector2Int(
+                        Mathf.Clamp((int)Mathf.Floor(uvMin.x * VSMConstants.PAGE_TABLE_RESOLUTION), 0, VSMConstants.PAGE_TABLE_RESOLUTION - 1),
+                        Mathf.Clamp((int)Mathf.Floor(uvMin.y * VSMConstants.PAGE_TABLE_RESOLUTION), 0, VSMConstants.PAGE_TABLE_RESOLUTION - 1)
+                    );
+                    Vector2Int pageMax = new Vector2Int(
+                        Mathf.Clamp((int)Mathf.Floor(uvMax.x * VSMConstants.PAGE_TABLE_RESOLUTION), 0, VSMConstants.PAGE_TABLE_RESOLUTION - 1),
+                        Mathf.Clamp((int)Mathf.Floor(uvMax.y * VSMConstants.PAGE_TABLE_RESOLUTION), 0, VSMConstants.PAGE_TABLE_RESOLUTION - 1)
+                    );
+
+                    for (int py = pageMin.y; py <= pageMax.y; py++)
+                    {
+                        for (int px = pageMin.x; px <= pageMax.x; px++)
+                        {
+                            int linear = py * VSMConstants.PAGE_TABLE_RESOLUTION + px;
+                            int wordIndex = linear >> 5;
+                            int bitIndex = linear & 31;
+                            int globalIndex = c * DynamicMaskStride + wordIndex;
+                            dynamicInvalidationMaskCPU[globalIndex] |= (uint)(1u << bitIndex);
+                        }
+                    }
+                }
+            }
+
+            // Upload to GPU
+            dynamicInvalidationMasksBuffer.SetData(dynamicInvalidationMaskCPU);
         }
 
         void DrawingPhase()
