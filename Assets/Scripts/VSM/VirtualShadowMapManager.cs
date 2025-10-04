@@ -4,6 +4,43 @@ using UnityEngine.Rendering;
 namespace VSM
 {
     /// <summary>
+    /// Static initializer to create VSM buffers early to prevent shader errors
+    /// </summary>
+    public static class VSMStaticInitializer
+    {
+        private static ComputeBuffer s_cascadeLightMatricesBuffer;
+        private static ComputeBuffer s_cascadeOffsetsBuffer;
+        private static bool s_initialized = false;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        static void InitializeBeforeScene()
+        {
+            if (s_initialized) return;
+
+            Debug.Log("[VSM Static] Initializing dummy buffers before scene load...");
+
+            // Create minimal buffers to prevent shader errors
+            s_cascadeLightMatricesBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(float) * 16);
+            s_cascadeLightMatricesBuffer.SetData(new Matrix4x4[VSMConstants.CASCADE_COUNT]);
+            Shader.SetGlobalBuffer("_VSM_CascadeLightMatrices", s_cascadeLightMatricesBuffer);
+
+            s_cascadeOffsetsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
+            s_cascadeOffsetsBuffer.SetData(new int[VSMConstants.CASCADE_COUNT * 2]);
+            Shader.SetGlobalBuffer("_VSM_CascadeOffsets", s_cascadeOffsetsBuffer);
+
+            s_initialized = true;
+            Debug.Log("[VSM Static] Dummy buffers created and bound globally");
+        }
+
+        public static void Cleanup()
+        {
+            s_cascadeLightMatricesBuffer?.Release();
+            s_cascadeOffsetsBuffer?.Release();
+            s_initialized = false;
+        }
+    }
+
+    /// <summary>
     /// Main manager for Virtual Shadow Maps system
     /// Orchestrates all VSM passes: bookkeeping, drawing, and sampling
     /// </summary>
@@ -85,35 +122,12 @@ namespace VSM
         void Awake()
         {
             mainCamera = GetComponent<Camera>();
-
-            // Create dummy buffers early to prevent shader errors before full initialization
-            CreateDummyBuffers();
         }
 
         void Start()
         {
             mainCamera = GetComponent<Camera>();
             InitializeVSM();
-        }
-
-        void CreateDummyBuffers()
-        {
-            // Create minimal buffers to prevent shader errors before VSM initialization
-            if (cascadeLightMatricesBuffer == null)
-            {
-                cascadeLightMatricesBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(float) * 16);
-                cascadeLightMatricesBuffer.SetData(new Matrix4x4[VSMConstants.CASCADE_COUNT]);
-                Shader.SetGlobalBuffer("_VSM_CascadeLightMatrices", cascadeLightMatricesBuffer);
-            }
-
-            if (cascadeOffsetsBuffer == null)
-            {
-                cascadeOffsetsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
-                cascadeOffsetsBuffer.SetData(new int[VSMConstants.CASCADE_COUNT * 2]);
-                Shader.SetGlobalBuffer("_VSM_CascadeOffsets", cascadeOffsetsBuffer);
-            }
-
-            Debug.Log("[VSM] Dummy buffers created to prevent early shader errors");
         }
 
         void InitializeVSM()
@@ -124,15 +138,11 @@ namespace VSM
             physicalMemory = new VSMPhysicalMemory(clearMemoryShader, copyBufferToTextureShader);
             hpb = new VSMHierarchicalPageBuffer(buildHPBShader);
 
-            // Initialize cascade data (reuse existing buffers if created in Awake)
+            // Initialize cascade data
+            // Note: Static initializer created dummy buffers, we now create real ones
             cascadeLightMatrices = new Matrix4x4[VSMConstants.CASCADE_COUNT];
-
-            if (cascadeLightMatricesBuffer == null)
-                cascadeLightMatricesBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(float) * 16);
-
-            if (cascadeOffsetsBuffer == null)
-                cascadeOffsetsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
-
+            cascadeLightMatricesBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(float) * 16);
+            cascadeOffsetsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
             cascadeShiftsBuffer = new ComputeBuffer(VSMConstants.CASCADE_COUNT, sizeof(int) * 2);
             previousCascadeOrigins = new Vector3[VSMConstants.CASCADE_COUNT];
 
