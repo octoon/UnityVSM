@@ -49,7 +49,7 @@ namespace VSM
     {
         [Header("VSM Settings")]
         [SerializeField] private Light directionalLight;
-        [SerializeField] private float firstCascadeSize = 2.0f;  // Side length of first cascade frustum (not radius)
+        [SerializeField] private float firstCascadeSize = 10.0f;  // FIXED: Increased from 2m to 10m for better coverage
         [SerializeField] private LayerMask shadowCasters = -1;
         [SerializeField] [Range(0, 8)] private int filterMargin = 1;  // FIXED: Default to 1 for 3x3 PCF filtering support
 
@@ -211,16 +211,15 @@ namespace VSM
                     Mathf.Floor(cameraPos.z / pageWorldSize) * pageWorldSize
                 );
 
-                // Paper section 12.2: "the light position is constrained so that, when modified,
-                // it slides along a plane parallel to the near-plane of the respective light matrix"
-                // This ensures cached page depths remain valid after light matrix translation
+                // FIXED: Cascades should be CONCENTRIC around the camera position
+                // Paper: "16 overlapping cascades arranged in a concentric manner"
+                // The light position should be behind the camera to see the cascade area
 
-                // Calculate light position: project along light direction
-                Vector3 lightPos = snappedCameraPos - lightDir * cascadeSize;
+                // Calculate light position: behind the cascade center (camera) looking forward
+                // We need to be far enough back to see the entire cascade area
+                Vector3 lightPos = snappedCameraPos - lightDir * (cascadeSize * 1.5f);
 
-                // Constrain to plane parallel to near plane (perpendicular to lightDir)
-                // The near plane is defined by its normal (lightDir) and a point on it
-                // We snap the light position to a grid on this plane
+                // Snap light position to page grid to maintain cache validity
                 Vector3 right = Vector3.Cross(lightDir, Vector3.up).normalized;
                 if (right.magnitude < 0.1f)
                     right = Vector3.Cross(lightDir, Vector3.right).normalized;
@@ -244,8 +243,8 @@ namespace VSM
                 // in light space (X,Y plane). We project lightPos onto the X-Y plane perpendicular to lightDir.
                 // The offset calculation should be in light-space coordinates, not world-space!
 
-                // Calculate frustum corner in world space (bottom-left of ortho projection)
-                Vector3 frustumBottomLeft = lightPos - right * (cascadeSize / 2) - up * (cascadeSize / 2);
+                // FIXED: Calculate cascade bottom-left corner (cascade is centered at camera)
+                Vector3 frustumBottomLeft = snappedCameraPos - right * (cascadeSize / 2) - up * (cascadeSize / 2);
 
                 // Project onto right/up plane to get 2D cascade origin
                 float originX = Vector3.Dot(frustumBottomLeft, right);
@@ -288,16 +287,19 @@ namespace VSM
                 previousCascadeOrigins[i] = cascadeOrigin;
 
                 // Create orthographic projection for cascade
-                Matrix4x4 viewMatrix = Matrix4x4.TRS(
-                    lightPos,
-                    Quaternion.LookRotation(lightDir),
-                    Vector3.one
-                ).inverse;
+                // FIXED: View matrix should look at the CASCADE CENTER (camera), not from lightPos
+                Matrix4x4 viewMatrix = Matrix4x4.LookAt(
+                    lightPos,                    // Eye position (behind cascade)
+                    snappedCameraPos,           // Look at cascade center (camera)
+                    Vector3.up                  // Up vector
+                );
 
+                // FIXED: Ortho projection should cover the cascade area
+                // The cascade is cascadeSize x cascadeSize, centered at the origin in view space
                 Matrix4x4 projMatrix = Matrix4x4.Ortho(
                     -cascadeSize / 2, cascadeSize / 2,
                     -cascadeSize / 2, cascadeSize / 2,
-                    0.1f, cascadeSize * 2
+                    0.1f, cascadeSize * 3  // Extend far plane to cover entire cascade depth
                 );
 
                 cascadeLightMatrices[i] = projMatrix * viewMatrix;

@@ -103,9 +103,13 @@ int CalculateCascadeLevelPixelPerfect(float screenTexelWorldSize, float cascade0
 int CalculateCascadeLevel(float3 worldPos, float3 cameraPos, float firstCascadeSideLength)
 {
     float distance = length(worldPos - cameraPos);
-    // firstCascadeSideLength is the side length of cascade 0's frustum (not radius)
-    // Paper: "the chosen level for a given location in world space is rotationally invariant"
-    float level = max(ceil(log2(distance / firstCascadeSideLength)), 0);
+    // FIXED: Cascade side length covers [-size/2, +size/2], so radius is size/2
+    // A point at distance d needs cascade of size >= 2*d to be covered
+    float cascadeRadius = firstCascadeSideLength * 0.5;
+
+    // Select cascade that can contain this distance
+    // Cascade k has radius = cascadeRadius * 2^k
+    float level = max(ceil(log2(distance / cascadeRadius)), 0);
     return min((int)level, VSM_CASCADE_COUNT - 1);
 }
 
