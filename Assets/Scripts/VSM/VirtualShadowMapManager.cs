@@ -115,6 +115,7 @@ namespace VSM
     /// Orchestrates all VSM passes: bookkeeping, drawing, and sampling
     /// </summary>
     [RequireComponent(typeof(Camera))]
+    [DefaultExecutionOrder(-10000)]
     public class VirtualShadowMapManager : MonoBehaviour
     {
         [Header("VSM Settings")]
@@ -184,11 +185,16 @@ namespace VSM
         private VSMMeshletRenderer meshletRenderer;
 
         private bool isInitialized = false;
+        private bool vsmDepthMaterialRuntimeCreated = false;
 
         void Awake()
         {
             VSMStaticInitializer.EnsureInitialized();
             mainCamera = GetComponent<Camera>();
+            if (mainCamera != null)
+            {
+                mainCamera.depthTextureMode |= DepthTextureMode.Depth;
+            }
         }
 
         void Start()
@@ -226,10 +232,13 @@ namespace VSM
             allocationCounterBuffer = new ComputeBuffer(2, sizeof(uint), ComputeBufferType.Raw);
             allocationCounterBuffer.SetData(new uint[] { 0, 0 });
 
-            // Create depth material if not assigned
+            // Create depth material if not assigned (track runtime creation to avoid destroying user assets)
             if (vsmDepthMaterial == null && vsmDepthShader != null)
             {
                 vsmDepthMaterial = new Material(vsmDepthShader);
+                vsmDepthMaterial.name = "VSM_RuntimeDepthMaterial";
+                vsmDepthMaterial.hideFlags = HideFlags.DontSaveInBuild | HideFlags.DontSaveInEditor;
+                vsmDepthMaterialRuntimeCreated = true;
             }
 
             // Create command buffer for VSM rendering
@@ -378,22 +387,10 @@ namespace VSM
             if (!isInitialized || directionalLight == null)
                 return;
 
-            // Only update cascade matrices here; the VSM pipeline runs after the camera renders
-            // so that _CameraDepthTexture is valid for MarkVisiblePages.
+            // Update cascades and run VSM pipeline before rendering.
+            // MarkVisiblePages will use previous frame's depth (or prepass if available).
             UpdateCascadeMatrices();
-        }
-
-        // Built-in pipeline: run VSM after the camera has produced the depth texture
-        void OnRenderImage(RenderTexture src, RenderTexture dst)
-        {
-            if (!isInitialized || directionalLight == null)
-            {
-                Graphics.Blit(src, dst);
-                return;
-            }
-
             ExecuteVSMPipeline();
-            Graphics.Blit(src, dst);
         }
 
         void ExecuteVSMPipeline()
@@ -1004,9 +1001,10 @@ namespace VSM
                 vsmCommandBuffer = null;
             }
 
-            if (vsmDepthMaterial != null)
+            if (vsmDepthMaterialRuntimeCreated && vsmDepthMaterial != null)
             {
                 Destroy(vsmDepthMaterial);
+                vsmDepthMaterial = null;
             }
 
             // Release temporary depth texture
