@@ -68,21 +68,11 @@ int3 VirtualPageCoordsToWrappedCoords(int3 pageCoords, int2 cascadeOffset)
 
     int2 offsetPageCoords = pageCoords.xy + cascadeOffset;
 
-    // FIXED: Use unsigned modulo to avoid performance warning
-    // Handle negative wraparound manually
+    // Optimization: resolution is power-of-two (32), so use bitmask instead of modulus
+    const int mask = VSM_PAGE_TABLE_RESOLUTION - 1;
     int2 wrappedPageCoords;
-
-    // For positive values, use uint modulo (fast)
-    // For negative values, add resolution until positive
-    if (offsetPageCoords.x >= 0)
-        wrappedPageCoords.x = ((uint)offsetPageCoords.x) % ((uint)VSM_PAGE_TABLE_RESOLUTION);
-    else
-        wrappedPageCoords.x = ((offsetPageCoords.x % (int)VSM_PAGE_TABLE_RESOLUTION) + VSM_PAGE_TABLE_RESOLUTION) % VSM_PAGE_TABLE_RESOLUTION;
-
-    if (offsetPageCoords.y >= 0)
-        wrappedPageCoords.y = ((uint)offsetPageCoords.y) % ((uint)VSM_PAGE_TABLE_RESOLUTION);
-    else
-        wrappedPageCoords.y = ((offsetPageCoords.y % (int)VSM_PAGE_TABLE_RESOLUTION) + VSM_PAGE_TABLE_RESOLUTION) % VSM_PAGE_TABLE_RESOLUTION;
+    wrappedPageCoords.x = offsetPageCoords.x & mask;
+    wrappedPageCoords.y = offsetPageCoords.y & mask;
 
     return int3(wrappedPageCoords, pageCoords.z);
 }

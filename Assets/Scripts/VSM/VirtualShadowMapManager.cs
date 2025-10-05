@@ -387,10 +387,19 @@ namespace VSM
             if (!isInitialized || directionalLight == null)
                 return;
 
-            // Update cascades and run VSM pipeline before rendering.
-            // MarkVisiblePages will use previous frame's depth (or prepass if available).
+            // Early: update cascades and bind globals so any early draws have SRVs.
             UpdateCascadeMatrices();
-            ExecuteVSMPipeline();
+            BindVSMDataToShaders();
+        }
+
+        // Built‑in pipeline: run after camera produced _CameraDepthTexture
+        void OnRenderImage(RenderTexture src, RenderTexture dst)
+        {
+            if (isInitialized && directionalLight != null)
+            {
+                ExecuteVSMPipeline();
+            }
+            Graphics.Blit(src, dst);
         }
 
         void ExecuteVSMPipeline()
