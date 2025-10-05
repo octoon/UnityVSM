@@ -378,8 +378,22 @@ namespace VSM
             if (!isInitialized || directionalLight == null)
                 return;
 
+            // Only update cascade matrices here; the VSM pipeline runs after the camera renders
+            // so that _CameraDepthTexture is valid for MarkVisiblePages.
             UpdateCascadeMatrices();
+        }
+
+        // Built-in pipeline: run VSM after the camera has produced the depth texture
+        void OnRenderImage(RenderTexture src, RenderTexture dst)
+        {
+            if (!isInitialized || directionalLight == null)
+            {
+                Graphics.Blit(src, dst);
+                return;
+            }
+
             ExecuteVSMPipeline();
+            Graphics.Blit(src, dst);
         }
 
         void ExecuteVSMPipeline()
